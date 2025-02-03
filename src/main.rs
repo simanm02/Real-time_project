@@ -1,3 +1,21 @@
+/* Keyboard controls for the simulator:
+
+    Hall call buttons for single elevator:
+     - Up-buttons: keys 'q, w, e' = floor '1, 2, 3'
+     - Down-buttons: keys 's, d, f' = floor '0, 1, 2'
+     - Cab call buttons: keys 'z, x, c, v' = floor '0, 1, 2, 3'
+
+    Stop-button: key 'p'
+    Obstruction lever: key '-'
+    
+    Manual button override:
+     - Down: '7'
+     - Stop: '8'
+     - Up: '9'
+     - Move back in bounds: '0'
+
+*/
+
 use std::thread::*;
 use std::time::*;
 
@@ -12,22 +30,21 @@ fn main() -> std::io::Result<()> {
     
     // Initialize the elevator connection to the server adress.
     // The elevator struct in elev.rs creates a mutex lock for the TCP stream
-    // This establishes a connection between the hardware and software.
     let elevator = e::Elevator::init("localhost:15657", elev_num_floors)?;
 
     println!("Elevator started:\n{:#?}", elevator);
 
-    // Polling period in milliseconds, which reads sensor data at 25 ms intervals.
+    // Polling period which reads sensor data at 25 ms intervals.
     let poll_period = Duration::from_millis(25);
 
     // Creates a crossbream channel, so that the call buttons.
-    // can receive and transmitt messages via TCP. "unbounded" refers to end-to-end communication.
+    // can receive and transmitt messages via TCP.
     let (call_button_tx, call_button_rx) = cbc::unbounded::<elevio::poll::CallButton>();
     {
         // Clone the elevator handle so that there can be a new thread dedicated to it.
         let elevator = elevator.clone();
 
-        // "Spawn" a new dedicated thread that continuously polls (takes note of)
+        // "Spawn" a new dedicated thread that continuously polls
         // call button presses and sends them (when pressed) to call_button_tx
         spawn(move || elevio::poll::call_buttons(elevator, call_button_tx, poll_period));
     }
@@ -78,6 +95,7 @@ fn main() -> std::io::Result<()> {
             recv(floor_sensor_rx) -> a => {
                 let floor = a.unwrap();
                 println!("Floor: {:#?}", floor);
+                elevator.floor_indicator(floor); // Update the floor indicator when a new floor is reached
                 dirn =
                     if floor == 0 {
                         e::DIRN_UP
@@ -98,6 +116,9 @@ fn main() -> std::io::Result<()> {
                         elevator.call_button_light(f, c, false);
                     }
                 }
+                if stop {
+                    elevator.motor_direction(e::DIRN_STOP);
+                }
             },
             // If we receive that there is an obstruction:
             recv(obstruction_rx) -> a => {
@@ -106,6 +127,5 @@ fn main() -> std::io::Result<()> {
                 elevator.motor_direction(if obstr { e::DIRN_STOP } else { dirn });
             },
         }
-        println!("Looping");
     }
 }
