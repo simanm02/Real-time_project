@@ -76,10 +76,15 @@ fn main() -> std::io::Result<()> {
     let mut dirn = e::DIRN_DOWN;
 
     // If the elevator isn't on a specific floor when we start, move down until it reaches one.
-    if elevator.floor_sensor().is_none() {
-        elevator.motor_direction(dirn);
+    // if elevator.floor_sensor().is_none() {
+    //     elevator.motor_direction(dirn);
+    // }
+    let (arrived_floor_tx, arrived_floor_rx) = cbc::unbounded::<u8>();
+    let mut starting_floor = floor_sensor_rx.recv().unwrap();
+    while starting_floor != 0 {
+        elevator.motor_direction(e::DIRN_DOWN);
+        starting_floor = floor_sensor_rx.recv().unwrap();
     }
-
     // Main loop that uses 'select!' to wait for messages from any of the channels:
     loop {
         cbc::select! {
@@ -87,23 +92,33 @@ fn main() -> std::io::Result<()> {
             recv(call_button_rx) -> button_type => {
                 let call_button = button_type.unwrap();
                 println!("{:#?}", call_button);
+                //  let floor = floor_sensor_rx.recv().unwrap();
+                // println!("{:#?}",floor);
                 // Turn on the corresponding call button light
                 elevator.call_button_light(call_button.floor, call_button.call, true);
-            },
+                let go_floor = call_button.floor;
+                let floor = floor_sensor_rx.recv().unwrap();
+                if floor < go_floor {
+                    dirn = e::DIRN_UP;
+                } else if floor > go_floor {
+                    dirn = e::DIRN_DOWN;
+                } else {
+                    dirn = e::DIRN_STOP;
+                }
+                elevator.motor_direction(dirn);
+                arrived_floor_tx.send(floor).unwrap();
+
+
+            }
 
             // If we receive that a new floor is reached from the thread:
             recv(floor_sensor_rx) -> a => {
                 let floor = a.unwrap();
                 println!("Floor: {:#?}", floor);
-                elevator.floor_indicator(floor); // Update the floor indicator when a new floor is reached
+                elevator.floor_indicator(floor);// Update the floor indicator when a new floor is reached
                 dirn =
-                    if floor == 0 {
-                        e::DIRN_UP
-                    } else if floor == elev_num_floors-1 {
-                        e::DIRN_DOWN
-                    } else {
-                        dirn
-                    };
+                    if floor == 0 { e::DIRN_STOP}
+                    else { dirn };
                 elevator.motor_direction(dirn);
             },
 
@@ -126,6 +141,13 @@ fn main() -> std::io::Result<()> {
                 println!("Obstruction: {:#?}", obstr);
                 elevator.motor_direction(if obstr { e::DIRN_STOP } else { dirn });
             },
+            recv(arrived_floor_rx) -> a => {
+                let arrived_floor = a.unwrap();
+                if(floor_sensor_rx.recv().unwrap() == arrived_floor) {
+                    elevator.motor_direction(e::DIRN_STOP);
+                }
+
+            }
         }
     }
 }
