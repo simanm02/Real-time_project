@@ -10,6 +10,8 @@ use std::sync::*; // For Arc and Mutex
 pub struct Elevator {
     socket: Arc<Mutex<TcpStream>>,
     pub num_floors: u8,
+    pub hall_call_floor: u8,
+    pub current_floor: u8,
 }
 
 // Constants for the elevator call buttons
@@ -22,6 +24,7 @@ pub const DIRN_DOWN: u8 = u8::MAX;
 pub const DIRN_STOP: u8 = 0;
 pub const DIRN_UP: u8 = 1;
 
+
 impl Elevator {
     // Initializes a new 'Elevator' by connecting a TCP socket to the server address
     pub fn init(addr: &str, num_floors: u8) -> Result<Elevator> {
@@ -29,6 +32,8 @@ impl Elevator {
             // Arc + Mutex is used to create a thread-safe reference counted pointer
             socket: Arc::new(Mutex::new(TcpStream::connect(addr)?)),
             num_floors,
+            hall_call_floor: 0,
+            current_floor: 0,
         })
     }
 

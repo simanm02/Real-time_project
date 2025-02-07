@@ -30,7 +30,7 @@ fn main() -> std::io::Result<()> {
     
     // Initialize the elevator connection to the server adress.
     // The elevator struct in elev.rs creates a mutex lock for the TCP stream
-    let elevator = e::Elevator::init("localhost:15657", elev_num_floors)?;
+    let mut elevator = e::Elevator::init("localhost:15657", elev_num_floors)?;
 
     println!("Elevator started:\n{:#?}", elevator);
 
@@ -75,16 +75,18 @@ fn main() -> std::io::Result<()> {
     // Define variable 'dirn' to keep track of current direction; down, up or stop.
     let mut dirn = e::DIRN_DOWN;
 
-    // If the elevator isn't on a specific floor when we start, move down until it reaches one.
-    // if elevator.floor_sensor().is_none() {
-    //     elevator.motor_direction(dirn);
-    // }
+    //If the elevator isn't on a specific floor when we start, move down until it reaches one.
+    if elevator.floor_sensor().is_none() {
+        elevator.motor_direction(dirn);
+    }
     let (arrived_floor_tx, arrived_floor_rx) = cbc::unbounded::<u8>();
     let mut starting_floor = floor_sensor_rx.recv().unwrap();
     while starting_floor != 0 {
         elevator.motor_direction(e::DIRN_DOWN);
         starting_floor = floor_sensor_rx.recv().unwrap();
     }
+    elevator.motor_direction(e::DIRN_STOP);
+
     // Main loop that uses 'select!' to wait for messages from any of the channels:
     loop {
         cbc::select! {
@@ -97,7 +99,9 @@ fn main() -> std::io::Result<()> {
                 // Turn on the corresponding call button light
                 elevator.call_button_light(call_button.floor, call_button.call, true);
                 let go_floor = call_button.floor;
-                let floor = floor_sensor_rx.recv().unwrap();
+                elevator.hall_call_floor = go_floor;
+                let floor = elevator.current_floor;
+                println!("Current Floor_hall: {:#?}", floor);
                 if floor < go_floor {
                     dirn = e::DIRN_UP;
                 } else if floor > go_floor {
@@ -106,20 +110,22 @@ fn main() -> std::io::Result<()> {
                     dirn = e::DIRN_STOP;
                 }
                 elevator.motor_direction(dirn);
-                arrived_floor_tx.send(floor).unwrap();
-
-
             }
 
             // If we receive that a new floor is reached from the thread:
             recv(floor_sensor_rx) -> a => {
                 let floor = a.unwrap();
+                elevator.current_floor = floor;
                 println!("Floor: {:#?}", floor);
+                println!("Current Floor: {:#?}", elevator.current_floor);
                 elevator.floor_indicator(floor);// Update the floor indicator when a new floor is reached
-                dirn =
-                    if floor == 0 { e::DIRN_STOP}
-                    else { dirn };
-                elevator.motor_direction(dirn);
+                let go_floor = elevator.hall_call_floor;
+                if floor == go_floor {
+                    elevator.motor_direction(e::DIRN_STOP);
+                }
+
+
+
             },
 
             // If we receive that a stop button is pressed from the thread:
@@ -143,7 +149,11 @@ fn main() -> std::io::Result<()> {
             },
             recv(arrived_floor_rx) -> a => {
                 let arrived_floor = a.unwrap();
-                if(floor_sensor_rx.recv().unwrap() == arrived_floor) {
+                println!("Arrived floor: {:#?}", arrived_floor);
+                let floor = floor_sensor_rx.recv().unwrap();
+                elevator.hall_call_floor = floor;
+                println!("Current Floor_arr: {:#?}", floor);
+                if floor == arrived_floor {
                     elevator.motor_direction(e::DIRN_STOP);
                 }
 
