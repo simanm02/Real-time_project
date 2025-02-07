@@ -23,6 +23,24 @@ use crossbeam_channel as cbc;
 
 use driver_rust::elevio;
 use driver_rust::elevio::elev as e;
+use driver_rust::elevio::elev::Elevator;
+
+fn hall_call_start_dir (go_floor: u8, floor: u8, mut dirn: u8)-> u8 {
+    if floor < go_floor {
+        dirn = e::DIRN_UP;
+    } else if floor > go_floor {
+        dirn = e::DIRN_DOWN;
+    } else {
+        dirn = e::DIRN_STOP;
+    }
+    dirn
+}
+fn hall_call_stop (go_floor: u8, floor: u8, mut dirn: u8)-> u8 {
+    if floor == go_floor {
+        dirn = e::DIRN_STOP;
+    }
+    dirn
+}
 
 fn main() -> std::io::Result<()> {
 
@@ -79,7 +97,7 @@ fn main() -> std::io::Result<()> {
     if elevator.floor_sensor().is_none() {
         elevator.motor_direction(dirn);
     }
-    let (arrived_floor_tx, arrived_floor_rx) = cbc::unbounded::<u8>();
+
     let mut starting_floor = floor_sensor_rx.recv().unwrap();
     while starting_floor != 0 {
         elevator.motor_direction(e::DIRN_DOWN);
@@ -94,22 +112,14 @@ fn main() -> std::io::Result<()> {
             recv(call_button_rx) -> button_type => {
                 let call_button = button_type.unwrap();
                 println!("{:#?}", call_button);
-                //  let floor = floor_sensor_rx.recv().unwrap();
-                // println!("{:#?}",floor);
                 // Turn on the corresponding call button light
                 elevator.call_button_light(call_button.floor, call_button.call, true);
                 let go_floor = call_button.floor;
-                elevator.hall_call_floor = go_floor;
                 let floor = elevator.current_floor;
-                println!("Current Floor_hall: {:#?}", floor);
-                if floor < go_floor {
-                    dirn = e::DIRN_UP;
-                } else if floor > go_floor {
-                    dirn = e::DIRN_DOWN;
-                } else {
-                    dirn = e::DIRN_STOP;
-                }
+                elevator.hall_call_floor = go_floor;
+                dirn = hall_call_start_dir(go_floor, floor, dirn);
                 elevator.motor_direction(dirn);
+
             }
 
             // If we receive that a new floor is reached from the thread:
@@ -120,12 +130,8 @@ fn main() -> std::io::Result<()> {
                 println!("Current Floor: {:#?}", elevator.current_floor);
                 elevator.floor_indicator(floor);// Update the floor indicator when a new floor is reached
                 let go_floor = elevator.hall_call_floor;
-                if floor == go_floor {
-                    elevator.motor_direction(e::DIRN_STOP);
-                }
-
-
-
+                dirn = hall_call_stop(go_floor, floor, dirn);
+                elevator.motor_direction(dirn);
             },
 
             // If we receive that a stop button is pressed from the thread:
@@ -147,17 +153,6 @@ fn main() -> std::io::Result<()> {
                 println!("Obstruction: {:#?}", obstr);
                 elevator.motor_direction(if obstr { e::DIRN_STOP } else { dirn });
             },
-            recv(arrived_floor_rx) -> a => {
-                let arrived_floor = a.unwrap();
-                println!("Arrived floor: {:#?}", arrived_floor);
-                let floor = floor_sensor_rx.recv().unwrap();
-                elevator.hall_call_floor = floor;
-                println!("Current Floor_arr: {:#?}", floor);
-                if floor == arrived_floor {
-                    elevator.motor_direction(e::DIRN_STOP);
-                }
-
-            }
         }
     }
 }
