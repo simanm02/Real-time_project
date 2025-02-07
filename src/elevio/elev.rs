@@ -10,7 +10,7 @@ use std::sync::*; // For Arc and Mutex
 pub struct Elevator {
     socket: Arc<Mutex<TcpStream>>,
     pub num_floors: u8,
-    pub hall_call_floor: u8,
+    pub hall_call_floor: Vec<u8>,
     pub current_floor: u8,
 }
 
@@ -32,7 +32,7 @@ impl Elevator {
             // Arc + Mutex is used to create a thread-safe reference counted pointer
             socket: Arc::new(Mutex::new(TcpStream::connect(addr)?)),
             num_floors,
-            hall_call_floor: 0,
+            hall_call_floor: vec![],
             current_floor: 0,
         })
     }

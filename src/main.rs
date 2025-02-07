@@ -116,9 +116,11 @@ fn main() -> std::io::Result<()> {
                 elevator.call_button_light(call_button.floor, call_button.call, true);
                 let go_floor = call_button.floor;
                 let floor = elevator.current_floor;
-                elevator.hall_call_floor = go_floor;
-                dirn = hall_call_start_dir(go_floor, floor, dirn);
-                elevator.motor_direction(dirn);
+                elevator.hall_call_floor.push(go_floor);
+                if elevator.hall_call_floor.len() == 1 {
+                    dirn = hall_call_start_dir(go_floor, floor, dirn);
+                    elevator.motor_direction(dirn);
+                }
 
             }
 
@@ -127,11 +129,24 @@ fn main() -> std::io::Result<()> {
                 let floor = a.unwrap();
                 elevator.current_floor = floor;
                 println!("Floor: {:#?}", floor);
-                println!("Current Floor: {:#?}", elevator.current_floor);
                 elevator.floor_indicator(floor);// Update the floor indicator when a new floor is reached
-                let go_floor = elevator.hall_call_floor;
-                dirn = hall_call_stop(go_floor, floor, dirn);
+                let mut iter = elevator.hall_call_floor.iter();
+                let go_floor_index = iter.position(|&x| x == floor);
+                if go_floor_index.is_some() {
+                    let go_floor = elevator.hall_call_floor.get(go_floor_index.unwrap());
+                    println!("Go floor: {:#?}", go_floor.unwrap());
+                    dirn = hall_call_stop(*go_floor.unwrap(), floor, dirn);
+                    if(dirn == e::DIRN_STOP){
+                        elevator.hall_call_floor.remove(go_floor_index.unwrap());
+                    }
+                }
                 elevator.motor_direction(dirn);
+                sleep(Duration::from_millis(1000));
+                if elevator.hall_call_floor.len() != 0 {
+                    let go_floor = elevator.hall_call_floor.get(0);
+                    dirn = hall_call_start_dir(*go_floor.unwrap(), floor, dirn);
+                    elevator.motor_direction(dirn);
+                }
             },
 
             // If we receive that a stop button is pressed from the thread:
