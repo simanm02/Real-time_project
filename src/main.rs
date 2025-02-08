@@ -38,6 +38,7 @@ fn hall_call_start_dir (go_floor: u8, floor: u8, mut dirn: u8)-> u8 {
 fn hall_call_stop (go_floor: u8, floor: u8, mut dirn: u8)-> u8 {
     if floor == go_floor {
         dirn = e::DIRN_STOP;
+        println!("Stopping at floor: {:#?}", floor);
     }
     dirn
 }
@@ -115,9 +116,13 @@ fn main() -> std::io::Result<()> {
                 // Turn on the corresponding call button light
                 elevator.call_button_light(call_button.floor, call_button.call, true);
                 let go_floor = call_button.floor;
+                let go_call = call_button.call;
+                let callbutton = vec![go_floor, go_call];
                 let floor = elevator.current_floor;
-                elevator.hall_call_floor.push(go_floor);
-                if elevator.hall_call_floor.len() == 1 {
+                if !elevator.call_button.iter().any(|x| x == &callbutton) {
+                    elevator.call_button.push(callbutton);
+                }
+                if elevator.call_button.len() == 1 {
                     dirn = hall_call_start_dir(go_floor, floor, dirn);
                     elevator.motor_direction(dirn);
                 }
@@ -130,21 +135,21 @@ fn main() -> std::io::Result<()> {
                 elevator.current_floor = floor;
                 println!("Floor: {:#?}", floor);
                 elevator.floor_indicator(floor);// Update the floor indicator when a new floor is reached
-                let mut iter = elevator.hall_call_floor.iter();
-                let go_floor_index = iter.position(|&x| x == floor);
+                let mut iter = elevator.call_button.iter();
+                let go_floor_index = iter.position(|x| *x.get(0).unwrap() == floor); // little bit of magic to find the index of the floor we are going to
                 if go_floor_index.is_some() {
-                    let go_floor = elevator.hall_call_floor.get(go_floor_index.unwrap());
-                    println!("Go floor: {:#?}", go_floor.unwrap());
-                    dirn = hall_call_stop(*go_floor.unwrap(), floor, dirn);
+                    let go_floor = elevator.call_button.get(go_floor_index.unwrap()).unwrap().get(0).unwrap(); // get the floor we are at(bit java style sry
+                    println!("Go floor: {:#?}", go_floor);
+                    dirn = hall_call_stop(*go_floor, floor, dirn);
                     if(dirn == e::DIRN_STOP){
-                        elevator.hall_call_floor.remove(go_floor_index.unwrap());
+                        elevator.call_button.remove(go_floor_index.unwrap());
                     }
                 }
                 elevator.motor_direction(dirn);
                 sleep(Duration::from_millis(1000));
-                if elevator.hall_call_floor.len() != 0 {
-                    let go_floor = elevator.hall_call_floor.get(0);
-                    dirn = hall_call_start_dir(*go_floor.unwrap(), floor, dirn);
+                if elevator.call_button.len() != 0 {
+                    let go_floor = elevator.call_button.get(0).unwrap().get(0).unwrap();
+                    dirn = hall_call_start_dir(*go_floor, floor, dirn);
                     elevator.motor_direction(dirn);
                 }
             },

@@ -3,14 +3,16 @@
 use std::fmt; // For implementing Display/Debug traits
 use std::io::*; // For read/write traits, etc.
 use std::net::TcpStream; // For the TCP connection to the elevator server
-use std::sync::*; // For Arc and Mutex
+use std::sync::*;
+use crate::elevio::poll::CallButton;
+// For Arc and Mutex
 
 #[derive(Clone, Debug)]
 // Elevator struct defines a mutex lock for the TCP stream and defines total floor count
 pub struct Elevator {
     socket: Arc<Mutex<TcpStream>>,
     pub num_floors: u8,
-    pub hall_call_floor: Vec<u8>,
+    pub call_button: Vec<Vec<u8>>,
     pub current_floor: u8,
 }
 
@@ -32,7 +34,7 @@ impl Elevator {
             // Arc + Mutex is used to create a thread-safe reference counted pointer
             socket: Arc::new(Mutex::new(TcpStream::connect(addr)?)),
             num_floors,
-            hall_call_floor: vec![],
+            call_button: vec![],
             current_floor: 0,
         })
     }
