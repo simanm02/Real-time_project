@@ -2,7 +2,7 @@
 
     Hall call buttons for single elevator:
      - Up-buttons: keys 'q, w, e' = floor '1, 2, 3'
-     - Down-buttons: keys 's, d, f' = floor '0, 1, 2'
+     - Down-buttons: keys 's, d, f' = floor '1, 2, 3'
      - Cab call buttons: keys 'z, x, c, v' = floor '0, 1, 2, 3'
 
     Stop-button: key 'p'
@@ -38,8 +38,8 @@ fn hall_call_start_dir (go_floor: u8, floor: u8, mut dirn: u8) -> u8 {
     println!("Direction: {:#?}", dirn);
     dirn
 }
-fn hall_call_stop (go_floor: u8, floor: u8, mut dirn: u8)-> u8 {
-    if floor == go_floor {
+fn hall_call_stop (go_floor: u8, floor: u8,go_call: u8 ,call: u8,mut dirn: u8)-> u8 {
+    if floor == go_floor && go_call == call {
         dirn = e::DIRN_STOP;
         println!("Stopping at floor: {:#?}", floor);
     }
@@ -62,17 +62,20 @@ fn start_elevator (elevator: &mut Elevator, go_floor: u8,floor: u8,  mut dirn: u
     }
 }
 fn stop_elevator_at_floor_and_start (elevator: &mut Elevator, floor: u8, mut dirn: u8) {
+    let call = elevator.call_buttons.get(0).unwrap().get(1).unwrap();
     let mut iter = elevator.call_buttons.iter();
-    let go_floor_index = iter.position(|x| *x.get(0).unwrap() == floor); // little bit of magic to find the index of the floor we are going to
-    if go_floor_index.is_some() {
-        let go_floor = elevator.call_buttons.get(go_floor_index.unwrap()).unwrap().get(0).unwrap(); // get the floor we are at(bit java style sry
+    let call_button_index = iter.position(|x| *x.get(0).unwrap() == floor); // little bit of magic to find the index of the floor we are going to
+    if call_button_index.is_some() {
+        let go_floor = elevator.call_buttons.get(call_button_index.unwrap()).unwrap().get(0).unwrap(); // get the floor we are at(bit java style sry
+        let go_call = elevator.call_buttons.get(call_button_index.unwrap()).unwrap().get(1).unwrap();
         println!("Go floor: {:#?}", go_floor);
-        dirn = hall_call_stop(*go_floor, floor, dirn);
+        dirn = elevator.current_direction;
+        dirn = hall_call_stop(*go_floor, floor,*go_call,*call, dirn);
         if(dirn == e::DIRN_STOP){
-            elevator.call_buttons.remove(go_floor_index.unwrap());
+            elevator.call_buttons.remove(call_button_index.unwrap());
         }
         elevator.motor_direction(dirn);
-        sleep(Duration::from_millis(1000));
+        sleep(Duration::from_millis(1000)); // wait in the floor for a second(door open..)
         if elevator.call_buttons.len() != 0 {
             let go_floor = elevator.call_buttons.get(0).unwrap().get(0).unwrap();
             dirn = hall_call_start_dir(*go_floor, floor, dirn);
@@ -200,13 +203,6 @@ fn main() -> std::io::Result<()> {
                 println!("Obstruction: {:#?}", obstr);
                 elevator.motor_direction(if obstr { e::DIRN_STOP } else { dirn });
             },
-            recv(buttonarray_rx) -> callbutton => {
-                let callbutton = callbutton.unwrap();
-                if !elevator.call_buttons.iter().any(|x| x == &callbutton) {
-                    elevator.call_buttons.push(callbutton);
-                    println!("teszt");
-                }
-            }
         }
     }
 }
