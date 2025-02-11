@@ -12,8 +12,9 @@ use crate::elevio::poll::CallButton;
 pub struct Elevator {
     socket: Arc<Mutex<TcpStream>>,
     pub num_floors: u8,
-    pub call_button: Vec<Vec<u8>>,
+    pub call_buttons: Vec<Vec<u8>>,
     pub current_floor: u8,
+    pub current_direction: u8,
 }
 
 // Constants for the elevator call buttons
@@ -34,8 +35,9 @@ impl Elevator {
             // Arc + Mutex is used to create a thread-safe reference counted pointer
             socket: Arc::new(Mutex::new(TcpStream::connect(addr)?)),
             num_floors,
-            call_button: vec![],
+            call_buttons: vec![],
             current_floor: 0,
+            current_direction: DIRN_STOP,
         })
     }
 
