@@ -61,6 +61,7 @@ fn start_elevator (elevator: &mut Elevator, go_floor: u8,floor: u8,  mut dirn: u
         elevator.motor_direction(dirn);
     }
 }
+/*
 fn stop_elevator_at_floor_and_start (elevator: &mut Elevator, floor: u8, mut dirn: u8) {
     let call = elevator.call_buttons.get(0).unwrap().get(1).unwrap();
     let mut iter = elevator.call_buttons.iter();
@@ -84,7 +85,42 @@ fn stop_elevator_at_floor_and_start (elevator: &mut Elevator, floor: u8, mut dir
             elevator.motor_direction(dirn);
         }
     }
+} */
+
+fn stop_elevator_at_floor_and_start(elevator: &mut Elevator, floor: u8) {
+    if let Some(pos) = elevator.call_buttons.iter().position(|call| call[0] == floor) {
+        // Stop elevator
+        elevator.motor_direction(e::DIRN_STOP);
+
+        // Disable call button lights
+        for call_type in 0..3 {
+            elevator.call_button_light(floor, call_type, false);
+        }
+
+        // Remove the call from the list
+        elevator.call_buttons.remove(pos);
+        println!("Call for floor {} removed", floor);
+
+        elevator.door_light(true);
+        std::thread::sleep(Duration::from_secs(1));
+        elevator.door_light(false);
+
+        // Handle pending calls and decide next direction
+        if let Some(next_call) = elevator.call_buttons.first() {
+            let next_floor = next_call[0];
+            let new_dir = if next_floor > floor {
+                e::DIRN_UP
+            } else if next_floor < floor {
+                e::DIRN_DOWN
+            } else {
+                e::DIRN_STOP
+            };
+            elevator.current_direction;
+            elevator.motor_direction(new_dir);
+        }
+    }
 }
+
 fn main() -> std::io::Result<()> {
 
     let elev_num_floors = 4; // Total floor count
@@ -180,7 +216,7 @@ fn main() -> std::io::Result<()> {
                 elevator.current_floor = floor;
                 println!("Floor: {:#?}", floor);
                 elevator.floor_indicator(floor);// Update the floor indicator when a new floor is reached
-                stop_elevator_at_floor_and_start(&mut elevator, floor, dirn);
+                stop_elevator_at_floor_and_start(&mut elevator, floor);
 
             },
 
