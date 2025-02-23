@@ -9,6 +9,7 @@ edition = "2018"
 [dependencies]
 #driver-rust = {git = "https://github.com/TTK4145/driver-rust", tag = "v0.1.0" }
 crossbeam-channel = "0.5"
+time = "0.3.37"
 
 [lib]
 name = "driver_rust"
