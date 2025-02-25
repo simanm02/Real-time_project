@@ -2,7 +2,7 @@
 
     Hall call buttons for single elevator:
      - Up-buttons: keys 'q, w, e' = floor '1, 2, 3'
-     - Down-buttons: keys 's, d, f' = floor '0, 1, 2'
+     - Down-buttons: keys 's, d, f' = floor '1, 2, 3'
      - Cab call buttons: keys 'z, x, c, v' = floor '0, 1, 2, 3'
 
     Stop-button: key 'p'
@@ -23,14 +23,123 @@ use crossbeam_channel as cbc;
 
 use driver_rust::elevio;
 use driver_rust::elevio::elev as e;
+use driver_rust::elevio::elev::Elevator;
+use driver_rust::elevio::poll::CallButton;
+
+fn hall_call_start_dir (go_floor: u8, floor: u8, mut dirn: u8) -> u8 {
+    if floor < go_floor {
+        dirn = e::DIRN_UP;
+    } else if floor > go_floor {
+        dirn = e::DIRN_DOWN;
+        println!("Going down");
+    } else {
+        dirn = e::DIRN_STOP;
+    }
+    println!("Direction: {:#?}", dirn);
+    dirn
+}
+fn hall_call_stop (go_floor: u8, floor: u8,go_call: u8 ,call: u8,mut dirn: u8)-> u8 {
+    if floor == go_floor && go_call == call {
+        dirn = e::DIRN_STOP;
+        println!("Stopping at floor: {:#?}", floor);
+    }
+    dirn
+}
+fn add_call_request_to_elevator (elevator: &mut Elevator, go_floor: u8, go_call: u8) {
+    let callbutton = vec![go_floor, go_call];
+    if !elevator.call_buttons.iter().any(|x| x == &callbutton) {
+        elevator.call_buttons.push(callbutton);
+    }
+
+
+}
+fn start_elevator (elevator: &mut Elevator, go_floor: u8,floor: u8,  mut dirn: u8) {
+    println!("Direction2: {:#?}", dirn);
+    if elevator.call_buttons.len() == 1 || (elevator.call_buttons.len() > 1 && elevator.current_direction == e::DIRN_STOP) {
+        dirn = hall_call_start_dir(go_floor, floor, dirn);
+        elevator.current_direction = dirn;
+        elevator.motor_direction(dirn);
+    }
+}
+/*
+fn stop_elevator_at_floor_and_start (elevator: &mut Elevator, floor: u8, mut dirn: u8) {
+    let call = elevator.call_buttons.get(0).unwrap().get(1).unwrap();
+    let mut iter = elevator.call_buttons.iter();
+    let call_button_index = iter.position(|x| *x.get(0).unwrap() == floor); // little bit of magic to find the index of the floor we are going to
+    if call_button_index.is_some() {
+        let go_floor = elevator.call_buttons.get(call_button_index.unwrap()).unwrap().get(0).unwrap(); // get the floor we are at(bit java style sry
+        let go_call = elevator.call_buttons.get(call_button_index.unwrap()).unwrap().get(1).unwrap();
+        println!("Go floor: {:#?}", go_floor);
+        dirn = elevator.current_direction;
+        dirn = hall_call_stop(*go_floor, floor,*go_call,*call, dirn);
+        if(dirn == e::DIRN_STOP){
+            elevator.call_buttons.remove(call_button_index.unwrap());
+        }
+        elevator.motor_direction(dirn);
+        sleep(Duration::from_millis(1000)); // wait in the floor for a second(door open..)
+        if elevator.call_buttons.len() != 0 {
+            let go_floor = elevator.call_buttons.get(0).unwrap().get(0).unwrap();
+            dirn = hall_call_start_dir(*go_floor, floor, dirn);
+            elevator.current_direction = dirn;
+            println!("Direction: {:#?}", dirn);
+            elevator.motor_direction(dirn);
+        }
+    }
+} */
+
+fn stop_elevator_at_floor_and_start(elevator: &mut Elevator, floor: u8) {
+    let serving_call = elevator.call_buttons.get(0).unwrap().get(1).unwrap();
+    if let Some(pos) = elevator.call_buttons.iter().position(|call| call[0] == floor && (call[1] == *serving_call || call[1] == e::CAB))  {
+        // Stop elevator
+        elevator.motor_direction(e::DIRN_STOP);
+
+        // Disable call button lights
+        // for call_type in 0..3 {
+        //     elevator.call_button_light(floor, call_type, false);
+        // }
+        elevator.call_button_light(floor,*serving_call, false);
+        // Remove the call from the list
+        elevator.call_buttons.remove(pos);
+        println!("Call for floor {} removed", floor);
+
+        elevator.door_light(true);
+        std::thread::sleep(Duration::from_secs(3));
+        elevator.door_light(false);
+
+        elevator.call_buttons.sort_by_key(|call| if call[1] == e::CAB { 0 } else { 1 });
+        // Handle pending calls and decide next direction ;
+        if let Some(next_call) = elevator.call_buttons.first() {
+            let next_floor = next_call[0];
+            let mut new_dir = if next_floor > floor {
+                e::DIRN_UP
+            } else if next_floor < floor {
+                e::DIRN_DOWN
+            } else {
+                elevator.call_button_light(floor, next_call[1], false);
+                elevator.call_buttons.remove(0);
+                e::DIRN_STOP
+
+            };
+            if let Some(next_call) = elevator.call_buttons.first() {
+                if new_dir == e::DIRN_STOP {
+                    new_dir = hall_call_start_dir(next_call[0], floor, new_dir);
+                }
+            }
+            elevator.current_direction = new_dir;
+            elevator.motor_direction(new_dir);
+        }
+    }
+}
 
 fn main() -> std::io::Result<()> {
+
+    
 
     let elev_num_floors = 4; // Total floor count
     
     // Initialize the elevator connection to the server adress.
     // The elevator struct in elev.rs creates a mutex lock for the TCP stream
-    let elevator = e::Elevator::init("localhost:15657", elev_num_floors)?;
+    let mut elevator = e::Elevator::init("localhost:15657", elev_num_floors)?;
 
     println!("Elevator started:\n{:#?}", elevator);
 
@@ -72,19 +181,32 @@ fn main() -> std::io::Result<()> {
         let elevator = elevator.clone();
         spawn(move || elevio::poll::obstruction(elevator, obstruction_tx, poll_period));
     }
-    // Define variable 'dirn' to keep track of current direction; down, up or stop.
-    let mut dirn = e::DIRN_DOWN;
+    let (buttonarray_tx, buttonarray_rx) = cbc::unbounded::<Vec<u8>>();
 
-    // If the elevator isn't on a specific floor when we start, move down until it reaches one.
-    // if elevator.floor_sensor().is_none() {
-    //     elevator.motor_direction(dirn);
-    // }
-    let (arrived_floor_tx, arrived_floor_rx) = cbc::unbounded::<u8>();
+    // Define variable 'dirn' to keep track of current direction; down, up or stop.
+    let mut dirn = e::DIRN_STOP;
+
+    //If the elevator isn't on a specific floor when we start, move down until it reaches one.
+    if elevator.floor_sensor().is_none() {
+        elevator.motor_direction(e::DIRN_DOWN);
+    }
+
+    for call_type in 0..3 {
+        for floor in 0..3 {
+            elevator.call_button_light(floor, call_type, false);
+        }
+    }
+
     let mut starting_floor = floor_sensor_rx.recv().unwrap();
     while starting_floor != 0 {
         elevator.motor_direction(e::DIRN_DOWN);
         starting_floor = floor_sensor_rx.recv().unwrap();
+        elevator.floor_indicator(starting_floor);
     }
+    elevator.motor_direction(e::DIRN_STOP);
+
+    elevator.floor_indicator(0);
+
     // Main loop that uses 'select!' to wait for messages from any of the channels:
     loop {
         cbc::select! {
@@ -92,62 +214,65 @@ fn main() -> std::io::Result<()> {
             recv(call_button_rx) -> button_type => {
                 let call_button = button_type.unwrap();
                 println!("{:#?}", call_button);
-                //  let floor = floor_sensor_rx.recv().unwrap();
-                // println!("{:#?}",floor);
                 // Turn on the corresponding call button light
                 elevator.call_button_light(call_button.floor, call_button.call, true);
                 let go_floor = call_button.floor;
-                let floor = floor_sensor_rx.recv().unwrap();
-                if floor < go_floor {
-                    dirn = e::DIRN_UP;
-                } else if floor > go_floor {
-                    dirn = e::DIRN_DOWN;
-                } else {
-                    dirn = e::DIRN_STOP;
-                }
-                elevator.motor_direction(dirn);
-                arrived_floor_tx.send(floor).unwrap();
-
-
-            }
+                let go_call = call_button.call;
+                let floor = elevator.current_floor;
+                add_call_request_to_elevator(&mut elevator, go_floor, go_call);
+                start_elevator(&mut elevator,go_floor,floor, dirn);
+            },
 
             // If we receive that a new floor is reached from the thread:
-            recv(floor_sensor_rx) -> a => {
-                let floor = a.unwrap();
+            recv(floor_sensor_rx) -> floor_sensor_data => {
+                let floor = floor_sensor_data.unwrap();
+                elevator.current_floor = floor;
                 println!("Floor: {:#?}", floor);
                 elevator.floor_indicator(floor);// Update the floor indicator when a new floor is reached
-                dirn =
-                    if floor == 0 { e::DIRN_STOP}
-                    else { dirn };
-                elevator.motor_direction(dirn);
+                stop_elevator_at_floor_and_start(&mut elevator, floor);
+
             },
 
             // If we receive that a stop button is pressed from the thread:
-            recv(stop_button_rx) -> a => {
-                let stop = a.unwrap();
-                println!("Stop button: {:#?}", stop);
-                for f in 0..elev_num_floors {
-                    for c in 0..3 {
-                        elevator.call_button_light(f, c, false);
-                    }
-                }
+            recv(stop_button_rx) -> stop_btn => {
+                let stop = stop_btn.unwrap();
+                println!("Stop button: {:?}", stop);
                 if stop {
+                    // Immediately stop the elevator
                     elevator.motor_direction(e::DIRN_STOP);
+            
+                    // Turn off all call button lights
+                    for f in 0..elev_num_floors {
+                        for c in 0..3 {
+                            elevator.call_button_light(f, c, false);
+                        }
+                    }
+                    // Clear pending call requests
+                    elevator.call_buttons.clear();
+            
+                    // Optionally, open the door to simulate an emergency stop procedure
+                    elevator.door_light(true);
+                    std::thread::sleep(Duration::from_secs(3));
+                    elevator.door_light(false);
+            
+                    // Continue to restart the loop
+                    continue;
                 }
             },
             // If we receive that there is an obstruction:
-            recv(obstruction_rx) -> a => {
-                let obstr = a.unwrap();
-                println!("Obstruction: {:#?}", obstr);
-                elevator.motor_direction(if obstr { e::DIRN_STOP } else { dirn });
-            },
-            recv(arrived_floor_rx) -> a => {
-                let arrived_floor = a.unwrap();
-                if(floor_sensor_rx.recv().unwrap() == arrived_floor) {
-                    elevator.motor_direction(e::DIRN_STOP);
+            recv(obstruction_rx) -> obstruction => {
+                let mut obstr = obstruction.unwrap();
+                if !elevator.floor_sensor().is_none() && obstr {
+                    println!("Obstruction: {:#?}", obstr);
+                    while obstr {
+                        elevator.motor_direction(e::DIRN_STOP);
+                        obstr = obstruction_rx.recv().unwrap();
+                    }
+                } else {
+                    obstr = false;
+                    println!("Obstruction: {:#?}", obstr);
                 }
-
-            }
+            },
         }
     }
 }
