@@ -4,7 +4,6 @@ use std::fmt; // For implementing Display/Debug traits
 use std::io::*; // For read/write traits, etc.
 use std::net::TcpStream; // For the TCP connection to the elevator server
 use std::sync::*;
-use crate::elevio::poll::CallButton;
 // For Arc and Mutex
 
 #[derive(Clone, Debug)]
