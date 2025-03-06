@@ -13,6 +13,7 @@ fn direction_call (go_floor: u8, floor: u8) -> u8 {
 
     if floor < go_floor {
         dirn = e::DIRN_UP;
+        println!("Going up");
     } else if floor > go_floor {
         dirn = e::DIRN_DOWN;
         println!("Going down");
@@ -20,7 +21,7 @@ fn direction_call (go_floor: u8, floor: u8) -> u8 {
         dirn = e::DIRN_STOP;
     }
 
-    println!("Direction: {:#?}", dirn);
+    // println!("Direction: {}", dirn);
     dirn
 }
 
@@ -32,7 +33,7 @@ fn add_call_request (elevator: &mut Elevator, go_floor: u8, go_call: u8) {
 }
 
 fn start_elevator (elevator: &mut Elevator, go_floor: u8,floor: u8,  mut dirn: u8) {
-    println!("Direction2: {:#?}", dirn);
+    // println!("Direction2: {:#?}", dirn);
     if elevator.call_buttons.len() == 1 || (elevator.call_buttons.len() > 1 && elevator.current_direction == e::DIRN_STOP) {
         dirn = direction_call(go_floor, floor);
         elevator.current_direction = dirn;
