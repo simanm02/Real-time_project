@@ -1,26 +1,13 @@
-# Rust Driver for Elevator project
+# Elevator Control System Rust Docs
 
-To use this library add the following to `Cargo.toml`:
+## Project Overview
+This code implements a control system for one signel elevator operating across four floors. The system is built in Rust and communicates with the elevator hardware through a TCP connection.
 
-```toml
-[dependencies]
-driver-rust = { git = "https://github.com/TTK4145/driver-rust", tag = "v0.X.0" }
-```
+Call queues and prioritization are handled according to the spec. The obstruction lever is implemented in such a way that it only halts the elevator if the door is open, or, if it's currently moving towards a floor, it waits and halts the elevator at the moment when the door opens. The stop button stops the elevator immediately no matter what, and clears all queues.
 
-For most recent release see [releases](https://github.com/TTK4145/driver-rust/releases). Note
-that we will come with breaking changes to `master`, so depending on the `master` branch directly
-might lead to some issues.
+## System structure
+The system spawns individual crossbeam channels for communication between threads that can't be accessed by any other process. These are threads that send events to the main control loop, and each sensor type has its own dedicated polling thread, including call buttons, floor sensors, stop button and obstruction sensor.
 
-When using the library in your project, it will be available under the
-`driver_rust` namespace, example:
+The elevator hardware then uses TCP in order for the elevator hardware to communicate with the polling threads, which has channels to the main control loop:
 
-```rust
-use driver_rust::elevio;
-
-fn main() -> std::io::Result<()> {
-    let num_floors = 4;
-    let elevator = elevio::Elevator::init("localhost:15657", num_floors)?;
-}
-```
-
-For an example of usage, see [main.rs](src/main.rs).
+[Elevator Hardware] <--TCP--> [Polling Threads] <--Channels--> [Main Control Loop]
