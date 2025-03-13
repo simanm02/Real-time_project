@@ -47,8 +47,3 @@ Cabin calls take priority over hall calls to optimize efficiency.
 1. Have rust installed on the computer
 2. Open a terminal and navigate to the cargo folder (the one containing 'Cargo.toml')
 3. Build and run by typing 'cargo run'
-
-## Future Improvements
-- Implement multi-elevator support with distributed call allocation
-- Add network resilience for handling disconnections
-- Optimize call serving algorithm for better efficiency
