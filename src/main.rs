@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::thread::*;
 use std::time::*;
 
@@ -6,6 +7,7 @@ use crossbeam_channel as cbc;
 use driver_rust::elevio;
 use driver_rust::elevio::elev as e;
 use driver_rust::elevio::elev::Elevator;
+use driver_rust::network::p2p_connect;
 
 // Decide direction based on call received
 fn direction_call (go_floor: u8, floor: u8) -> u8 {
@@ -106,6 +108,12 @@ fn main() -> std::io::Result<()> {
     // Initialize the elevator connection to the server adress.
     // The elevator struct in elev.rs creates a mutex lock for the TCP stream
     let mut elevator = e::Elevator::init("localhost:15657", elev_num_floors)?;
+    // Start the peer manager and connect to the peer
+    let network_manager = p2p_connect::start_peer_manager(7878);
+    p2p_connect::connect(Arc::clone(&network_manager), "localhost:7878");
+    //send message to peer
+    p2p_connect::send(Arc::clone(&network_manager), "localhost:7878", "Hello from elevator");
+
 
     println!("Elevator started:\n{:#?}", elevator);
 
