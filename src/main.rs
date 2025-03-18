@@ -1,7 +1,3 @@
-<<<<<<< Updated upstream
-use std::thread::*;
-use std::time::*;
-=======
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::SystemTime;
@@ -10,18 +6,14 @@ use std::time::Duration;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpListener;
->>>>>>> Stashed changes
 
 use crossbeam_channel as cbc;
 
 use driver_rust::elevio;
 use driver_rust::elevio::elev as e;
 use driver_rust::elevio::elev::Elevator;
-<<<<<<< Updated upstream
-=======
 use driver_rust::network::p2p_connect;
 use driver_rust::elevio::cost::{calculate_cost, ElevatorMessage};
->>>>>>> Stashed changes
 
 /*
 // Decide direction based on call received
@@ -141,8 +133,10 @@ impl ElevatorSystem {
     }
     
     // Assign a hall call to the best elevator
+    // Replace the assign_hall_call method with this improved version
+// that properly handles ties in cost calculation
+
     fn assign_hall_call(&self, floor: u8, direction: u8, timestamp: u64) {
-        
         {
             let hall_calls = self.hall_calls.lock().unwrap();
             if let Some((assigned_id, existing_ts)) = hall_calls.get(&(floor, direction)) {
@@ -157,8 +151,8 @@ impl ElevatorSystem {
             }
         }
         
-        let mut best_id = self.local_id.clone();
-        let mut lowest_cost = i32::MAX;
+        // Store (cost, id) pairs for all elevators
+        let mut all_costs: Vec<(i32, String)> = Vec::new();
         
         // Calculate cost for local elevator
         {
@@ -170,11 +164,7 @@ impl ElevatorSystem {
                 floor,
                 direction
             );
-            
-            if cost < lowest_cost {
-                lowest_cost = cost;
-                best_id = self.local_id.clone();
-            }
+            all_costs.push((cost, self.local_id.clone()));
         }
         
         // Calculate costs for other elevators
@@ -190,35 +180,47 @@ impl ElevatorSystem {
                     floor,
                     direction
                 );
+                all_costs.push((cost, id.clone()));
+            }
+        }
+        
+        // Sort by cost (ascending) and then by id (ascending) for consistent tie-breaking
+        all_costs.sort_by(|a, b| {
+            match a.0.cmp(&b.0) {
+                std::cmp::Ordering::Equal => a.1.cmp(&b.1),
+                other => other,
+            }
+        });
+        
+        // The best elevator is the first in the sorted list
+        if let Some((_, best_id)) = all_costs.first() {
+            let best_id = best_id.clone();
+            
+            println!("Call (floor {}, dir {}) assigned to {} (costs: {:?})", 
+                floor, direction, best_id, all_costs);
                 
-                if cost < lowest_cost {
-                    lowest_cost = cost;
-                    best_id = id.clone();
+            // Update hall call assignment
+            {
+                let mut hall_calls = self.hall_calls.lock().unwrap();
+                hall_calls.insert((floor, direction), (best_id.clone(), timestamp));
+            }
+            
+            // If we are the best elevator, add the call to our queue
+            if best_id == self.local_id {
+                let mut elevator = self.local_elevator.lock().unwrap();
+                
+                // Set the call button light
+                elevator.call_button_light(floor, direction, true);
+                
+                // Add to our queue if not already there
+                let callbutton = vec![floor, direction];
+                if !elevator.call_buttons.iter().any(|x| x == &callbutton) {
+                    elevator.call_buttons.push(callbutton);
                 }
+                
+                // Start elevator if needed
+                start_elevator(&mut elevator);
             }
-        }
-        
-        // Update hall call assignment
-        {
-            let mut hall_calls = self.hall_calls.lock().unwrap();
-            hall_calls.insert((floor, direction), (best_id.clone(), timestamp));
-        }
-        
-        // If we are the best elevator, add the call to our queue
-        if best_id == self.local_id {
-            let mut elevator = self.local_elevator.lock().unwrap();
-            
-            // Set the call button light
-            elevator.call_button_light(floor, direction, true);
-            
-            // Add to our queue if not already there
-            let callbutton = vec![floor, direction];
-            if !elevator.call_buttons.iter().any(|x| x == &callbutton) {
-                elevator.call_buttons.push(callbutton);
-            }
-            
-            // Start the elevator if needed
-            start_elevator(&mut elevator);
         }
     }
     
@@ -475,15 +477,6 @@ fn message_listener(elevator_system: Arc<ElevatorSystem>, port: u16) {
     let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).expect("Could not bind to address");
     println!("Message listener started on port {}", port);
     
-<<<<<<< Updated upstream
-    // Initialize the elevator connection to the server adress.
-    // The elevator struct in elev.rs creates a mutex lock for the TCP stream
-    let mut elevator = e::Elevator::init("localhost:15657", elev_num_floors)?;
-
-    println!("Elevator started:\n{:#?}", elevator);
-
-    // Polling period which reads sensor data at 25 ms intervals.
-=======
     // Create a channel for passing messages to the processor
     let (tx, rx) = cbc::unbounded::<(String, String)>(); // (message, from_addr)
     
@@ -622,7 +615,6 @@ fn main() -> std::io::Result<()> {
     
     
     // Set up polling
->>>>>>> Stashed changes
     let poll_period = Duration::from_millis(25);
     
     // Crossbeam for call buttons
