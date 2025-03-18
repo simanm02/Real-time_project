@@ -5,12 +5,14 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 /// PeerManager: több kapcsolatot kezel egyszerre
+/// PeerManager: manages multiple connections simultaneously
 pub struct NetworkManager {
     peers: Arc<Mutex<HashMap<String, TcpStream>>>,
 }
 
 impl NetworkManager {
     /// Új `PeerManager` létrehozása
+    /// Creating a new `PeerManager`
     pub fn new() -> Arc<Self> {
         Arc::new(NetworkManager {
             peers: Arc::new(Mutex::new(HashMap::new())),
@@ -18,11 +20,13 @@ impl NetworkManager {
     }
 
     /// Új peer hozzáadása
+    /// Adding a new peer
     fn add_peer(&self, addr: String, stream: TcpStream) {
         self.peers.lock().unwrap().insert(addr, stream);
     }
 
     /// Üzenet küldése egy adott peernek
+    /// Sending a message to a specific peer
     pub fn send_message(&self, addr: &str, message: &str) {
         if let Some(stream) = self.peers.lock().unwrap().get_mut(addr) {
             stream.write_all(message.as_bytes()).unwrap();
@@ -32,6 +36,7 @@ impl NetworkManager {
     }
 
     /// Bejövő kapcsolatokat kezelő függvény
+    /// Function handling incoming connections
     fn handle_client(mut stream: TcpStream, peers: Arc<Mutex<HashMap<String, TcpStream>>>) {
         let mut buffer = [0; 512];
         let addr = stream.peer_addr().unwrap().to_string();
@@ -53,6 +58,7 @@ impl NetworkManager {
     }
 
     /// Peerhez való csatlakozás
+    /// Connecting to a peer
     pub fn connect_to_peer(peer_manager: Arc<Self>, addr: &str) {
         match TcpStream::connect(addr) {
             Ok(stream) => {
@@ -72,6 +78,7 @@ impl NetworkManager {
     }
 
     /// Szerver elindítása bejövő kapcsolatokhoz
+    /// Starting the server for incoming connections
     pub fn start_listener(peer_manager: Arc<Self>, port: u16) {
         let listener = TcpListener::bind(("0.0.0.0", port)).expect("Could not bind to address");
         let peers_clone = Arc::clone(&peer_manager.peers);
@@ -98,6 +105,7 @@ impl NetworkManager {
 }
 
 // **Függvények a PeerManager kezelésére**
+// **Functions for handling PeerManager**
 pub fn start_peer_manager(listening_port: u16) -> Arc<NetworkManager> {
     let peer_manager = NetworkManager::new();
     NetworkManager::start_listener(Arc::clone(&peer_manager), listening_port);
