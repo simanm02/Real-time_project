@@ -15,24 +15,6 @@ use driver_rust::elevio::elev::Elevator;
 use driver_rust::network::p2p_connect;
 use driver_rust::elevio::cost::{calculate_cost, ElevatorMessage};
 
-/*
-// Decide direction based on call received
-fn direction_call(go_floor: u8, floor: u8) -> u8 {
-    let dirn: u8;
-
-    if floor < go_floor {
-        dirn = e::DIRN_UP;
-        println!("Going up");
-    } else if floor > go_floor {
-        dirn = e::DIRN_DOWN;
-        println!("Going down");
-    } else {
-        dirn = e::DIRN_STOP;
-    }
-
-    dirn
-} */
-
 // Structure to hold shared state for all elevators in the system
 struct ElevatorSystem {
     // Local elevator state
@@ -55,6 +37,15 @@ struct ElevatorState {
     direction: u8,
     call_buttons: Vec<Vec<u8>>,
     last_seen: u64, // Timestamp of last update
+}
+
+fn direction_to_string(direction: u8) -> &'static str {
+    match direction {
+        e::DIRN_UP => "UP",
+        e::DIRN_DOWN => "DOWN",
+        e::DIRN_STOP => "STOP",
+        _ => "UNKNOWN"
+    }
 }
 
 impl ElevatorSystem {
@@ -104,6 +95,37 @@ impl ElevatorSystem {
         
         self.broadcast_message(&msg.to_string());
     }
+
+    fn handle_hall_call_message(&self, floor: u8, direction: u8, timestamp: u64) {
+        // Add to hall calls if newer than what we have
+        let mut update_needed = false;
+        {
+            let mut hall_calls = self.hall_calls.lock().unwrap();
+            
+            if let Some((_, existing_timestamp)) = hall_calls.get(&(floor, direction)) {
+                if timestamp > *existing_timestamp {
+                    hall_calls.insert((floor, direction), (String::new(), timestamp));
+                    update_needed = true;
+                }
+            } else {
+                hall_calls.insert((floor, direction), (String::new(), timestamp));
+                update_needed = true;
+            }
+        }
+        
+        if update_needed {
+            // Turn on the hall call light
+            {
+                let elevator = self.local_elevator.lock().unwrap();
+                elevator.call_button_light(floor, direction, true);
+            }
+            
+            // Determine the best elevator for this call
+            self.assign_hall_call(floor, direction, timestamp);
+        }
+    }
+
+
     
     // Process a new hall call
     fn process_hall_call(&self, floor: u8, direction: u8) {
@@ -131,21 +153,61 @@ impl ElevatorSystem {
         // Determine the best elevator for this call
         self.assign_hall_call(floor, direction, timestamp);
     }
+
+    fn handle_elevator_state_message(&self, id: String, floor: u8, direction: u8, call_buttons: Vec<Vec<u8>>) {
+        // Update our knowledge of this elevator's state
+        let mut elevator_states = self.elevator_states.lock().unwrap();
+        
+        let timestamp = match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
+            Ok(n) => n.as_secs(),
+            Err(_) => 0,
+        };
+        
+        elevator_states.insert(id.clone(), ElevatorState {
+            floor,
+            direction,
+            call_buttons,
+            last_seen: timestamp,
+        });
+        
+        // Re-evaluate hall call assignments
+        drop(elevator_states); // Release the lock before calling assign_hall_call
+        
+        let hall_calls = self.hall_calls.lock().unwrap().clone();
+        for ((call_floor, call_direction), (_, timestamp)) in hall_calls {
+            self.assign_hall_call(call_floor, call_direction, timestamp);
+        }
+    }
+
+    fn handle_completed_call_message(&self, floor: u8, direction: u8) {
+        // Update hall call status
+        {
+            let mut hall_calls = self.hall_calls.lock().unwrap();
+            hall_calls.remove(&(floor, direction));
+        }
+        
+        // Turn off the hall call light
+        {
+            let elevator = self.local_elevator.lock().unwrap();
+            elevator.call_button_light(floor, direction, false);
+        }
+    }
+
+
     
     // Assign a hall call to the best elevator
-    // Replace the assign_hall_call method with this improved version
-// that properly handles ties in cost calculation
+    // that properly handles ties in cost calculation
+
+    
 
     fn assign_hall_call(&self, floor: u8, direction: u8, timestamp: u64) {
+        // Check if call is already assigned
         {
             let hall_calls = self.hall_calls.lock().unwrap();
             if let Some((assigned_id, existing_ts)) = hall_calls.get(&(floor, direction)) {
-                // If already assigned to someone, and no "newer" timestamp, do nothing.
+                // If already assigned to someone, and no "newer" timestamp, do nothing
                 if !assigned_id.is_empty() && *existing_ts == timestamp {
-                    println!(
-                        "Call (floor {}, dir {}) is already assigned to {} with same timestamp, skipping.",
-                        floor, direction, assigned_id
-                    );
+                    // Don't print anything - reduces console spam
                     return;
                 }
             }
@@ -196,8 +258,11 @@ impl ElevatorSystem {
         if let Some((_, best_id)) = all_costs.first() {
             let best_id = best_id.clone();
             
-            println!("Call (floor {}, dir {}) assigned to {} (costs: {:?})", 
-                floor, direction, best_id, all_costs);
+            // Only print if this elevator is the one assigned to handle the call
+            if best_id == self.local_id {
+                println!("Hall call (floor {}, dir {}) assigned to this elevator", 
+                    floor, direction_to_string(direction));
+            }
                 
             // Update hall call assignment
             {
@@ -223,6 +288,8 @@ impl ElevatorSystem {
             }
         }
     }
+
+    
     
     // Handle a completed call
     fn complete_call(&self, floor: u8, direction: u8) {
@@ -241,7 +308,7 @@ impl ElevatorSystem {
         self.broadcast_message(&msg.to_string());
     }
     
-    // Process a message received from another elevator
+    /// Process a message received from another elevator
     fn process_message(&self, message: ElevatorMessage, from_addr: Option<String>) {
         // If we got this message from a specific address, make sure it's in our peer list
         if let Some(addr) = from_addr {
@@ -250,69 +317,13 @@ impl ElevatorSystem {
         
         match message {
             ElevatorMessage::HallCall { floor, direction, timestamp } => {
-                // Add to hall calls if newer than what we have
-                let mut update_needed = false;
-                {
-                    let mut hall_calls = self.hall_calls.lock().unwrap();
-                    
-                    if let Some((_, existing_timestamp)) = hall_calls.get(&(floor, direction)) {
-                        if timestamp > *existing_timestamp {
-                            hall_calls.insert((floor, direction), (String::new(), timestamp));
-                            update_needed = true;
-                        }
-                    } else {
-                        hall_calls.insert((floor, direction), (String::new(), timestamp));
-                        update_needed = true;
-                    }
-                }
-                
-                if update_needed {
-                    // Turn on the hall call light
-                    {
-                        let elevator = self.local_elevator.lock().unwrap();
-                        elevator.call_button_light(floor, direction, true);
-                    }
-                    
-                    // Determine the best elevator for this call
-                    self.assign_hall_call(floor, direction, timestamp);
-                }
+                self.handle_hall_call_message(floor, direction, timestamp);
             },
             ElevatorMessage::ElevatorState { id, floor, direction, call_buttons } => {
-                // Update our knowledge of this elevator's state
-                let mut elevator_states = self.elevator_states.lock().unwrap();
-                
-                let timestamp = match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
-                    Ok(n) => n.as_secs(),
-                    Err(_) => 0,
-                };
-                
-                elevator_states.insert(id.clone(), ElevatorState {
-                    floor,
-                    direction,
-                    call_buttons,
-                    last_seen: timestamp,
-                });
-                
-                // Re-evaluate hall call assignments
-                drop(elevator_states); // Release the lock before calling assign_hall_call
-                
-                let hall_calls = self.hall_calls.lock().unwrap().clone();
-                for ((call_floor, call_direction), (_, timestamp)) in hall_calls {
-                    self.assign_hall_call(call_floor, call_direction, timestamp);
-                }
+                self.handle_elevator_state_message(id, floor, direction, call_buttons);
             },
             ElevatorMessage::CompletedCall { floor, direction } => {
-                // Update hall call status
-                {
-                    let mut hall_calls = self.hall_calls.lock().unwrap();
-                    hall_calls.remove(&(floor, direction));
-                }
-                
-                // Turn off the hall call light
-                {
-                    let elevator = self.local_elevator.lock().unwrap();
-                    elevator.call_button_light(floor, direction, false);
-                }
+                self.handle_completed_call_message(floor, direction);
             }
         }
     }

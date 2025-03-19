@@ -21,7 +21,7 @@ impl NetworkManager {
 
     /// Új peer hozzáadása
     /// Adding a new peer
-    fn add_peer(&self, addr: String, stream: TcpStream) {
+    pub fn add_peer(&self, addr: String, stream: TcpStream) {
         self.peers.lock().unwrap().insert(addr, stream);
     }
 
@@ -30,8 +30,26 @@ impl NetworkManager {
     pub fn send_message(&self, addr: &str, message: &str) {
         if let Some(stream) = self.peers.lock().unwrap().get_mut(addr) {
             stream.write_all(message.as_bytes()).unwrap();
-        } else {
+        } 
+        /*
+        else {
             println!("Peer {} not found!", addr);
+        } */
+    }
+
+    /// Send a message to all connected peers
+    pub fn broadcast_message(&self, message: &str) {
+        let peers = self.peers.lock().unwrap();
+        
+        for (addr, stream) in peers.iter() {
+            match stream.try_clone() {
+                Ok(mut stream) => {
+                    if let Err(e) = stream.write_all(message.as_bytes()) {
+                        println!("Failed to send to {}: {}", addr, e);
+                    }
+                },
+                Err(e) => println!("Failed to clone stream for {}: {}", addr, e),
+            }
         }
     }
 
@@ -119,21 +137,3 @@ pub fn connect(peer_manager: Arc<NetworkManager>, addr: &str) {
 pub fn send(peer_manager: Arc<NetworkManager>, addr: &str, message: &str) {
     peer_manager.send_message(addr, message);
 }
-
-// fn main() {
-//     let peer_manager = start_peer_manager();
-//
-//     loop {
-//         println!("Enter command: [connect <addr> | send <addr> <msg> | exit]");
-//         let mut input = String::new();
-//         std::io::stdin().read_line(&mut input).unwrap();
-//         let parts: Vec<&str> = input.trim().split_whitespace().collect();
-//
-//         match parts.as_slice() {
-//             ["connect", addr] => connect(Arc::clone(&peer_manager), addr),
-//             ["send", addr, msg @ ..] => send(Arc::clone(&peer_manager), addr, &msg.join(" ")),
-//             ["exit"] => break,
-//             _ => println!("Invalid command."),
-//         }
-//     }
-// }

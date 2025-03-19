@@ -42,14 +42,30 @@ pub fn calculate_cost(
     cost
 }
 
-// Enum that defines type of message sent between elevators
+/// Message types for elevator network communication
 #[derive(Debug, Clone)]
 pub enum ElevatorMessage {
-    HallCall { floor: u8, direction: u8, timestamp: u64 },
-    ElevatorState { id: String, floor: u8, direction: u8, call_buttons: Vec<Vec<u8>> },
-    CompletedCall { floor: u8, direction: u8 },
+    /// Message for a new hall call
+    HallCall { 
+        floor: u8, 
+        direction: u8, 
+        timestamp: u64 
+    },
+    
+    /// Message containing an elevator's current state
+    ElevatorState { 
+        id: String, 
+        floor: u8, 
+        direction: u8, 
+        call_buttons: Vec<Vec<u8>> 
+    },
+    
+    /// Message indicating a call has been completed
+    CompletedCall { 
+        floor: u8, 
+        direction: u8 
+    },
 }
-
 
 impl ElevatorMessage {
     // Convert message to string for network transmission
