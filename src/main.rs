@@ -6,7 +6,7 @@ use std::time::Duration;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-
+use std::thread::sleep;
 use crossbeam_channel as cbc;
 
 use driver_rust::elevio;
@@ -22,7 +22,7 @@ struct ElevatorSystem {
     local_elevator: Arc<Mutex<Elevator>>,
     
     // Global system state
-    hall_calls: Arc<Mutex<HashMap<(u8, u8), (String, u64)>>>, // (floor, direction) -> (assigned_to, timestamp)
+    hall_calls: Arc<Mutex<HashMap<(u8, u8), (String, u64)>>>, // (floor, direction) -> (aigned_to,ss timestamp)
     elevator_states: Arc<Mutex<HashMap<String, ElevatorState>>>,
     
     // Network communication
@@ -284,7 +284,7 @@ impl ElevatorSystem {
                 }
                 
                 // Start elevator if needed
-                start_elevator(&mut elevator);
+                start_elevator(&mut elevator, floor, direction);
             }
         }
     }
@@ -379,30 +379,75 @@ impl ElevatorSystem {
 }
 
 // Function to start elevator movement based on its call queue
-fn start_elevator(elevator: &mut Elevator) {
-    if elevator.call_buttons.is_empty() || elevator.current_direction != e::DIRN_STOP {
-        return;
+fn start_elevator(elevator: &mut Elevator, go_floor: u8,  mut dirn: u8) {
+    if elevator.call_buttons.len() == 1 || (elevator.call_buttons.len() > 1 && elevator.current_direction == e::DIRN_STOP) {
+        dirn = hall_call_start_dir(go_floor, elevator.current_floor, dirn);
+        elevator.current_direction = dirn;
+        elevator.motor_direction(dirn);
     }
-    
-    // Get the first call in the queue
-    let first_call = &elevator.call_buttons[0];
-    let go_floor = first_call[0];
-    let current_floor = elevator.current_floor;
-    
-    // Determine direction
-    let direction = if current_floor < go_floor {
-        println!("Going up");
+}
+fn decide_next_call(elevator: &mut Elevator) -> Option<&Vec<u8>> {
+    if let Some(next_call) = elevator.call_buttons.iter().find(|call| {
+        (elevator.current_direction == e::DIRN_UP && call[0] > elevator.current_floor) ||
+            (elevator.current_direction == e::DIRN_DOWN && call[0] < elevator.current_floor)
+    }) {
+        Some(next_call)
+    } else if let Some(next_call) = elevator.call_buttons.iter().find(|call| call[0] == elevator.current_floor ){
+        // Handle case when no calls in the current direction
+        Some(next_call)
+    } else {
+        elevator.call_buttons.first()
+    }
+
+}
+fn hall_call_start_dir (go_floor: u8, floor: u8, mut dirn: u8) -> u8 {
+    if floor < go_floor {
+        dirn = e::DIRN_UP;
+    } else if floor > go_floor {
+        dirn = e::DIRN_DOWN;
+    } else {
+        dirn = e::DIRN_STOP;
+    }
+    println!("Direction: {:#?}", dirn);
+    dirn
+}
+
+fn decide_direction_by_call(call: u8) -> u8 {
+    if call == 0 {
         e::DIRN_UP
-    } else if current_floor > go_floor {
-        println!("Going down");
+    } else if call == 1 {
         e::DIRN_DOWN
     } else {
         e::DIRN_STOP
-    };
-    
-    // Update direction and start motor
-    elevator.current_direction = direction;
-    elevator.motor_direction(direction);
+    }
+}
+fn decide_call_by_direction(dirn: u8) -> u8 {
+    if dirn == e::DIRN_UP {
+        0
+    } else if dirn == e::DIRN_DOWN {
+        1
+    } else {
+        2
+    }
+}
+
+fn is_more_request_in_dir(elevator:  Elevator) -> bool {
+    elevator.call_buttons.iter().any(|call| {
+        (elevator.current_direction == e::DIRN_UP && call[0] > elevator.current_floor) ||
+            (elevator.current_direction == e::DIRN_DOWN && call[0] < elevator.current_floor)
+    })
+}
+
+fn opposite_dir(dirn: u8) -> u8 {
+    if dirn == e::DIRN_UP {
+        e::DIRN_DOWN
+    } else {
+        e::DIRN_UP
+    }
+}
+
+fn find_call_button_index(call_button: Vec<u8>,elevator: &mut Elevator) -> Option<usize> {
+    elevator.call_buttons.iter().position(|call| call == &call_button)
 }
 
 // Function to handle calls when the elevator reaches a certain floor
@@ -413,21 +458,37 @@ fn serve_call(elevator_system: &ElevatorSystem, floor: u8) {
     if elevator.call_buttons.is_empty() {
         return;
     }
-    
-    // Get first call in queue
-    let serving_call = elevator.call_buttons[0][1];
-    
+
     // Check if there is a call for this floor
-    if let Some(pos) = elevator.call_buttons.iter().position(|call|
-        call[0] == floor && (call[1] == serving_call || call[1] == e::CAB)) {
-        
+    if let Some(pos) = elevator.call_buttons.iter().position(|call| call[0] == floor &&
+        (decide_direction_by_call(call[1]) == elevator.current_direction || call[1] == e::CAB)
+        || !is_more_request_in_dir(elevator.clone())) {
+
+        //find the serving call
+        let mut serving_call = vec![3,3];
+        if let Some(same_direction_pos) = elevator.call_buttons.iter().position(|call| call[0] == floor &&
+            (decide_direction_by_call(call[1]) == elevator.current_direction)) {
+            serving_call = elevator.call_buttons.get(same_direction_pos).unwrap().clone();
+            elevator.call_button_light(floor,serving_call[1], false);
+            elevator.call_buttons.remove(same_direction_pos);
+        }
+        else if let Some(opp_dir_pos) = elevator.call_buttons.iter().position(|call| !is_more_request_in_dir(elevator.clone())
+            && call[0] == floor && decide_direction_by_call(call[1]) == opposite_dir(elevator.current_direction)) {
+            serving_call = elevator.call_buttons.get(opp_dir_pos).unwrap().clone();
+            elevator.call_button_light(floor,serving_call[1], false);
+            elevator.call_buttons.remove(opp_dir_pos);
+        }
+        //find if there is a cab call too
+        if let Some(cab_call_pos) = elevator.call_buttons.iter().position(|call| call[0] == floor && call[1] == e::CAB) {
+            elevator.call_button_light(floor, e::CAB, false);
+            elevator.call_buttons.remove(cab_call_pos);
+        }
+
         // Stop the elevator
         elevator.motor_direction(e::DIRN_STOP);
-        elevator.current_direction = e::DIRN_STOP;
-        
-        // Turn off the call button light
-        let call_type = elevator.call_buttons[pos][1];
-        elevator.call_button_light(floor, call_type, false);
+        //elevator.current_direction = e::DIRN_STOP;
+
+        let call_type = serving_call[1];
         
         // If this was a hall call, mark it as completed
         if call_type != e::CAB {
@@ -437,32 +498,24 @@ fn serve_call(elevator_system: &ElevatorSystem, floor: u8) {
             elevator_system.complete_call(floor, completed_direction);
             elevator = elevator_system.local_elevator.lock().unwrap();
         }
-        
-        // Remove call from queue
-        elevator.call_buttons.remove(pos);
+
         println!("Call for floor {} removed", floor);
         
         // Open door for 3 seconds
         elevator.door_light(true);
         std::thread::sleep(Duration::from_secs(3));
-        elevator.door_light(false);
-        
-        // Sort call queue to prioritize cab calls
-        elevator.call_buttons.sort_by_key(|call| if call[1] == e::CAB { 0 } else { 1 });
-        
-        // Decide next direction based on remaining calls
-        if !elevator.call_buttons.is_empty() {
-            let next_floor = elevator.call_buttons[0][0];
-            
-            let new_dir = if next_floor > floor {
+
+        // Handle pending calls and decide next direction ;
+        if let Some(next_call) = decide_next_call(&mut *elevator) {
+
+            let next_floor = next_call[0];
+            let next_call_type = next_call[1];
+            let mut new_dir = if next_floor > floor {
                 e::DIRN_UP
             } else if next_floor < floor {
                 e::DIRN_DOWN
             } else {
-                // If next call is for the current floor, serve it immediately
-                let next_call_type = elevator.call_buttons[0][1]; 
-                elevator.call_button_light(floor, next_call_type, false);
-                
+                let next_call_index = find_call_button_index(next_call.clone(), &mut *elevator).unwrap();
                 // If hall call, mark as completed
                 if next_call_type != e::CAB {
                     // Need to drop the elevator lock before acquiring system locks
@@ -470,15 +523,25 @@ fn serve_call(elevator_system: &ElevatorSystem, floor: u8) {
                     elevator_system.complete_call(floor, next_call_type);
                     elevator = elevator_system.local_elevator.lock().unwrap();
                 }
-                
-                elevator.call_buttons.remove(0);
+                elevator.call_button_light(floor, next_call_type, false);
+                elevator.call_buttons.remove(next_call_index);
                 e::DIRN_STOP
+
             };
-            
-            // Update elevator direction and motor
+            if let Some(next_call) = decide_next_call(&mut *elevator) {
+                if new_dir == e::DIRN_STOP {
+                    new_dir = hall_call_start_dir(next_call[0], floor, new_dir);
+                }
+            }
+            if new_dir == opposite_dir(elevator.current_direction) {
+                println!("Opposite direction");
+                sleep(Duration::from_secs(3));
+            }
+            elevator.door_light(false);
             elevator.current_direction = new_dir;
             elevator.motor_direction(new_dir);
         }
+        elevator.door_light(false);
     }
 }
 
@@ -623,7 +686,7 @@ fn main() -> std::io::Result<()> {
             });
         }
     }
-    
+
     
     // Set up polling
     let poll_period = Duration::from_millis(25);
@@ -707,7 +770,7 @@ fn main() -> std::io::Result<()> {
                     }
                     
                     // Start elevator if needed
-                    start_elevator(&mut elevator);
+                    start_elevator(&mut elevator, call_button.floor, 0);
                 } else {
                     // Handle hall call through the elevator system
                     elevator_system.process_hall_call(call_button.floor, call_button.call);
