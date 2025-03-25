@@ -27,6 +27,7 @@ impl NetworkManager {
 
     /// Üzenet küldése egy adott peernek
     /// Sending a message to a specific peer
+    /*
     pub fn send_message(&self, addr: &str, message: &str) {
         if let Some(stream) = self.peers.lock().unwrap().get_mut(addr) {
             stream.write_all(message.as_bytes()).unwrap();
@@ -52,6 +53,33 @@ impl NetworkManager {
             }
         }
     }
+    */
+
+    pub fn send_message(&self, addr: &str, message: &str) {
+        let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(stream) = peers.get_mut(addr) {
+            if let Err(e) = stream.write_all(message.as_bytes()) {
+                println!("Failed to send message to {}: {}. Removing peer.", addr, e);
+                peers.remove(addr);
+            }
+        }
+    }
+    
+    pub fn broadcast_message(&self, message: &str) {
+        let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
+        let mut to_remove = Vec::new();
+        for (addr, stream) in peers.iter_mut() {
+            if let Err(e) = stream.write_all(message.as_bytes()) {
+                println!("Failed to broadcast to {}: {}. Marking for removal.", addr, e);
+                to_remove.push(addr.clone());
+            }
+        }
+        for addr in to_remove {
+            peers.remove(&addr);
+        }
+    }
+    
+    
 
     /// Bejövő kapcsolatokat kezelő függvény
     /// Function handling incoming connections

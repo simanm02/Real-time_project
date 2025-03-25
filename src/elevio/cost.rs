@@ -65,6 +65,10 @@ pub enum ElevatorMessage {
         floor: u8, 
         direction: u8 
     },
+
+    SyncRequest {
+        id: String,
+    },
 }
 
 impl ElevatorMessage {
@@ -85,6 +89,9 @@ impl ElevatorMessage {
             },
             ElevatorMessage::CompletedCall { floor, direction } => {
                 format!("COMPLETED|{}|{}", floor, direction)
+            },
+            ElevatorMessage::SyncRequest { id } => {
+                format!("SYNC|{}", id)
             },
         }
     }
@@ -142,6 +149,14 @@ impl ElevatorMessage {
                 let direction = parts[2].parse::<u8>().ok()?;
                 
                 Some(ElevatorMessage::CompletedCall { floor, direction })
+            },
+            "SYNC" => {
+                if parts.len() < 2 {
+                    return None;
+                }
+
+                let id = parts[1].to_string();
+                Some(ElevatorMessage::SyncRequest {id})
             },
             _ => None,
         }

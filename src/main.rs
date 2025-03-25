@@ -13,6 +13,7 @@ use driver_rust::elevio;
 use driver_rust::elevio::elev as e;
 use driver_rust::elevio::elev::Elevator;
 use driver_rust::network::p2p_connect;
+use driver_rust::elevio::fault_handler;
 use driver_rust::elevio::cost::{calculate_cost, ElevatorMessage};
 
 // Structure to hold shared state for all elevators in the system
@@ -71,6 +72,58 @@ impl ElevatorSystem {
         let mut peers = self.peers.lock().unwrap();
         if !peers.contains(&addr) {
             peers.push(addr);
+        }
+    }
+    
+    
+    fn establish_bidirectional_connection(&self, peer_addr: &str) {
+        // 1. Add the peer to our local list
+        self.add_peer(peer_addr.to_string());
+        
+        // 2. Connect using the network manager
+        p2p_connect::connect(Arc::clone(&self.network_manager), peer_addr);
+        
+        // 3. Send a direct message to ensure the peer knows about us
+        match std::net::TcpStream::connect(peer_addr) {
+            Ok(mut stream) => {
+                let elevator = self.local_elevator.lock().unwrap();
+                let msg = ElevatorMessage::ElevatorState {
+                    id: self.local_id.clone(),
+                    floor: elevator.current_floor,
+                    direction: elevator.current_direction,
+                    call_buttons: elevator.call_buttons.clone(),
+                };
+                stream.write_all(msg.to_string().as_bytes()).unwrap_or(());
+                
+                // 4. Request current hall call state
+                let sync_request = ElevatorMessage::SyncRequest {
+                    id: self.local_id.clone(),
+                };
+                stream.write_all(sync_request.to_string().as_bytes()).unwrap_or(());
+            },
+            Err(e) => {
+                println!("Failed to connect directly to peer at {}: {}", peer_addr, e);
+            }
+        }
+    }
+
+    fn handle_sync_request(&self, requesting_id: String) {
+        // Send all current hall calls to the requesting elevator
+        let hall_calls = self.hall_calls.lock().unwrap().clone();
+        
+        for ((floor, direction), (assigned_to, timestamp)) in hall_calls {
+            let sync_msg = ElevatorMessage::HallCall {
+                floor,
+                direction,
+                timestamp,
+            };
+            
+            // Find the address for this elevator ID
+            let peers = self.peers.lock().unwrap();
+            for peer_addr in &*peers {
+                // Here we're sending to all peers, but ideally would target just the requesting elevator
+                p2p_connect::send(Arc::clone(&self.network_manager), peer_addr, &sync_msg.to_string());
+            }
         }
     }
     
@@ -324,6 +377,9 @@ impl ElevatorSystem {
             },
             ElevatorMessage::CompletedCall { floor, direction } => {
                 self.handle_completed_call_message(floor, direction);
+            },
+            ElevatorMessage::SyncRequest { id } => {
+                self.handle_sync_request(id);
             }
         }
     }
@@ -450,6 +506,7 @@ fn find_call_button_index(call_button: Vec<u8>,elevator: &mut Elevator) -> Optio
     elevator.call_buttons.iter().position(|call| call == &call_button)
 }
 
+/*
 // Function to handle calls when the elevator reaches a certain floor
 fn serve_call(elevator_system: &ElevatorSystem, floor: u8) {
     let mut elevator = elevator_system.local_elevator.lock().unwrap();
@@ -460,6 +517,7 @@ fn serve_call(elevator_system: &ElevatorSystem, floor: u8) {
     }
 
     // Check if there is a call for this floor
+    
     if let Some(pos) = elevator.call_buttons.iter().position(|call| call[0] == floor &&
         (decide_direction_by_call(call[1]) == elevator.current_direction || call[1] == e::CAB)
         || !is_more_request_in_dir(elevator.clone())) {
@@ -544,9 +602,128 @@ fn serve_call(elevator_system: &ElevatorSystem, floor: u8) {
         elevator.door_light(false);
     }
 }
+     */
+
+     fn serve_call(elevator_system: &ElevatorSystem, floor: u8) {
+        let mut elevator = elevator_system.local_elevator.lock().unwrap();
+    
+        // If no calls to serve, return.
+        if elevator.call_buttons.is_empty() {
+            return;
+        }
+    
+        // Try to find a call with the same direction as the elevator's current direction.
+        let serving_call_opt = if let Some(pos) = elevator.call_buttons.iter().position(|call| {
+            call[0] == floor && (decide_direction_by_call(call[1]) == elevator.current_direction || call[1] == e::CAB)
+        }) {
+            // Remove and return this call.
+            let call = elevator.call_buttons.remove(pos);
+            elevator.call_button_light(floor, call[1], false);
+            Some(call)
+        } 
+        // If none found, check if there is a call with the opposite direction and no pending request in current direction.
+        else if !is_more_request_in_dir(elevator.clone()) {
+            if let Some(pos) = elevator.call_buttons.iter().position(|call| {
+                call[0] == floor && decide_direction_by_call(call[1]) == opposite_dir(elevator.current_direction)
+            }) {
+                let call = elevator.call_buttons.remove(pos);
+                elevator.call_button_light(floor, call[1], false);
+                Some(call)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+    
+        // If no valid serving call was found, return without further action.
+        let serving_call = match serving_call_opt {
+            Some(call) => call,
+            None => return,
+        };
+    
+        // For cab calls, also check and remove any extra cab call.
+        if let Some(cab_call_pos) = elevator.call_buttons.iter().position(|call| call[0] == floor && call[1] == e::CAB) {
+            elevator.call_button_light(floor, e::CAB, false);
+            elevator.call_buttons.remove(cab_call_pos);
+        }
+    
+        // Stop the elevator.
+        elevator.motor_direction(e::DIRN_STOP);
+        let call_type = serving_call[1];
+    
+        // If this was a hall call, mark it as completed.
+        if call_type != e::CAB {
+            let completed_direction = call_type;
+            drop(elevator);
+            elevator_system.complete_call(floor, completed_direction);
+            elevator = elevator_system.local_elevator.lock().unwrap();
+        }
+    
+        println!("Call for floor {} removed", floor);
+    
+        // Open door for 3 seconds.
+        elevator.door_light(true);
+        std::thread::sleep(Duration::from_secs(3));
+    
+        // Decide next call.
+        if let Some(next_call) = decide_next_call(&mut *elevator) {
+            let next_floor = next_call[0];
+            let next_call_type = next_call[1];
+            let mut new_dir = if next_floor > floor {
+                e::DIRN_UP
+            } else if next_floor < floor {
+                e::DIRN_DOWN
+            } else {
+                let next_call_index = find_call_button_index(next_call.clone(), &mut *elevator).unwrap();
+                if next_call_type != e::CAB {
+                    drop(elevator);
+                    elevator_system.complete_call(floor, next_call_type);
+                    elevator = elevator_system.local_elevator.lock().unwrap();
+                }
+                elevator.call_button_light(floor, next_call_type, false);
+                elevator.call_buttons.remove(next_call_index);
+                e::DIRN_STOP
+            };
+            if let Some(next_call) = decide_next_call(&mut *elevator) {
+                if new_dir == e::DIRN_STOP {
+                    new_dir = hall_call_start_dir(next_call[0], floor, new_dir);
+                }
+            }
+            if new_dir == opposite_dir(elevator.current_direction) {
+                println!("Opposite direction");
+                sleep(Duration::from_secs(3));
+            }
+            elevator.door_light(false);
+            elevator.current_direction = new_dir;
+            elevator.motor_direction(new_dir);
+        }
+        elevator.door_light(false);
+    }
+
+fn start_reconnection_service(elevator_system: Arc<ElevatorSystem>) {
+    thread::spawn(move || {
+        loop {
+            // Sleep for 5 seconds between reconnection attempts
+            thread::sleep(Duration::from_secs(5));
+                
+            // Try to reconnect to potential peers
+            for i in 0..3 {
+                let elevator_id = elevator_system.local_id.parse::<usize>().unwrap_or(0);
+                if i as usize != elevator_id - 1 {
+                    let peer_message_port = 8878 + i;
+                    let peer_addr = format!("localhost:{}", peer_message_port);
+                        
+                    // Try to establish bidirectional connection
+                    elevator_system.establish_bidirectional_connection(&peer_addr);
+                }
+            }
+        }
+    });
+}
 
 // Custom message listener thread
-fn message_listener(elevator_system: Arc<ElevatorSystem>, port: u16) {
+fn message_listener(elevator_system: Arc<ElevatorSystem>, port: u16, fault_monitor: Arc<Mutex<fault_handler::ElevatorHealthMonitor>>) {
     // Create a TCP listener for direct message passing
     let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).expect("Could not bind to address");
     println!("Message listener started on port {}", port);
@@ -593,6 +770,10 @@ fn message_listener(elevator_system: Arc<ElevatorSystem>, port: u16) {
             match rx.recv_timeout(Duration::from_millis(500)) {
                 Ok((message, from_addr)) => {
                     if let Some(parsed_msg) = ElevatorMessage::from_string(&message) {
+
+                        if let ElevatorMessage::ElevatorState { ref id, .. } = parsed_msg {
+                            fault_monitor.lock().unwrap().record_heartbeat(id);
+                        }
                         elevator_system_clone.process_message(parsed_msg, Some(from_addr));
                     }
                 },
@@ -626,11 +807,28 @@ fn main() -> std::io::Result<()> {
     
     // Initialize the elevator
     let server_addr = format!("localhost:{}", elev_port);
-    let elevator = e::Elevator::init(&server_addr, elev_num_floors)?;
+    let mut elevator = e::Elevator::init(&server_addr, elev_num_floors)?;
+
+    if let Some((saved_floor, saved_direction, saved_calls)) = fault_handler::load_elevator_state(&elev_id) {
+        println!("Recovered persisted state for elevator {}", elev_id);
+        elevator.current_floor = saved_floor;
+        elevator.current_direction = saved_direction;
+        elevator.call_buttons = saved_calls;
+        elevator.floor_indicator(saved_floor);
+    }
     
     // Initialize network
     let network_port = 7878 + elev_port - 15657; // Network ports start at 7878
     let network_manager = p2p_connect::start_peer_manager(network_port);
+    
+    // Initialize elevator system
+    /*
+    let elevator_system = Arc::new(ElevatorSystem::new(
+        elev_id.clone(),
+        elevator.clone(),
+        Arc::clone(&network_manager)
+    ));
+    */
     
     // Initialize elevator system
     let elevator_system = Arc::new(ElevatorSystem::new(
@@ -638,10 +836,21 @@ fn main() -> std::io::Result<()> {
         elevator.clone(),
         Arc::clone(&network_manager)
     ));
+
     
+
+    // *** Add this line to broadcast the current state ***
+    elevator_system.broadcast_state();
+
+
+    let fault_monitor = fault_handler::ElevatorHealthMonitor::new();
+    fault_handler::start_health_monitoring(Arc::clone(&fault_monitor), Arc::clone(&elevator_system.hall_calls));
+    
+    start_reconnection_service(Arc::clone(&elevator_system));
+
     // Start message listener
     let message_port = 8878 + elev_port - 15657; // Message ports start at 8878
-    message_listener(Arc::clone(&elevator_system), message_port);
+    message_listener(Arc::clone(&elevator_system), message_port, Arc::clone(&fault_monitor));
     
     // Try to connect to other potential elevators
     for i in 0..3 {
