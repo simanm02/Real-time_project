@@ -38,6 +38,8 @@ struct ElevatorState {
     direction: u8,
     call_buttons: Vec<Vec<u8>>,
     last_seen: u64, // Timestamp of last update
+    is_obstructed: bool,
+    obstruction_duration: u64,
 }
 
 fn direction_to_string(direction: u8) -> &'static str {
@@ -76,35 +78,35 @@ impl ElevatorSystem {
     }
     
     
-    fn establish_bidirectional_connection(&self, peer_addr: &str) {
-        // 1. Add the peer to our local list
-        self.add_peer(peer_addr.to_string());
-        
-        // 2. Connect using the network manager
-        p2p_connect::connect(Arc::clone(&self.network_manager), peer_addr);
-        
-        // 3. Send a direct message to ensure the peer knows about us
+    fn establish_bidirectional_connection(&self, peer_addr: &str) -> bool {
+        // 1. Try to connect first to verify peer is available
         match std::net::TcpStream::connect(peer_addr) {
             Ok(mut stream) => {
+                // Peer is available, proceed with connection
+                self.add_peer(peer_addr.to_string());
+                p2p_connect::connect(Arc::clone(&self.network_manager), peer_addr);
+                
+                // Send our state 
                 let elevator = self.local_elevator.lock().unwrap();
                 let msg = ElevatorMessage::ElevatorState {
                     id: self.local_id.clone(),
                     floor: elevator.current_floor,
                     direction: elevator.current_direction,
                     call_buttons: elevator.call_buttons.clone(),
+                    is_obstructed: elevator.is_obstructed,
                 };
-                stream.write_all(msg.to_string().as_bytes()).unwrap_or(());
                 
-                // 4. Request current hall call state
-                let sync_request = ElevatorMessage::SyncRequest {
-                    id: self.local_id.clone(),
-                };
-                stream.write_all(sync_request.to_string().as_bytes()).unwrap_or(());
+                if stream.write_all(msg.to_string().as_bytes()).is_ok() {
+                    println!("Successfully established connection with {}", peer_addr);
+                    return true;
+                }
             },
             Err(e) => {
-                println!("Failed to connect directly to peer at {}: {}", peer_addr, e);
+                // Don't spam with connection errors, just return false
+                return false;
             }
         }
+        false
     }
 
     fn handle_sync_request(&self, requesting_id: String) {
@@ -144,6 +146,7 @@ impl ElevatorSystem {
             floor: elevator.current_floor,
             direction: elevator.current_direction,
             call_buttons: elevator.call_buttons.clone(),
+            is_obstructed: elevator.is_obstructed,
         };
         
         self.broadcast_message(&msg.to_string());
@@ -207,7 +210,7 @@ impl ElevatorSystem {
         self.assign_hall_call(floor, direction, timestamp);
     }
 
-    fn handle_elevator_state_message(&self, id: String, floor: u8, direction: u8, call_buttons: Vec<Vec<u8>>) {
+    fn handle_elevator_state_message(&self, id: String, floor: u8, direction: u8, call_buttons: Vec<Vec<u8>>, is_obstructed: bool) {
         // Update our knowledge of this elevator's state
         let mut elevator_states = self.elevator_states.lock().unwrap();
         
@@ -221,6 +224,8 @@ impl ElevatorSystem {
             direction,
             call_buttons,
             last_seen: timestamp,
+            is_obstructed,
+            obstruction_duration: 0,
         });
         
         // Re-evaluate hall call assignments
@@ -233,16 +238,46 @@ impl ElevatorSystem {
     }
 
     fn handle_completed_call_message(&self, floor: u8, direction: u8) {
-        // Update hall call status
-        {
-            let mut hall_calls = self.hall_calls.lock().unwrap();
-            hall_calls.remove(&(floor, direction));
-        }
+        println!("Received CompletedCall message for floor {}, direction {}", 
+                 floor, direction_to_string(direction));
         
-        // Turn off the hall call light
+        // Update hall call status
+        let was_assigned_to_us = {
+            let mut hall_calls = self.hall_calls.lock().unwrap();
+            if let Some((assigned_to, _)) = hall_calls.remove(&(floor, direction)) {
+                println!("Removed hall call from map. Was assigned to: {}", assigned_to);
+                assigned_to == self.local_id
+            } else {
+                false
+            }
+        };
+        
+        // ALWAYS turn off the hall call light, regardless of who it was assigned to
         {
             let elevator = self.local_elevator.lock().unwrap();
             elevator.call_button_light(floor, direction, false);
+            println!("Turned off hall call light for floor {}, direction {}", 
+                    floor, direction_to_string(direction));
+        }
+        
+        // If it was assigned to us but we didn't complete it, remove from our call queue too
+        if was_assigned_to_us {
+            let mut elevator = self.local_elevator.lock().unwrap();
+            let callbutton = vec![floor, direction];
+            
+            if let Some(pos) = elevator.call_buttons.iter().position(|x| x == &callbutton) {
+                elevator.call_buttons.remove(pos);
+                println!("Removed hall call from our queue: floor {}, direction {}", 
+                       floor, direction_to_string(direction));
+                
+                // Persist state after removing the call
+                fault_handler::persist_elevator_state(
+                    &self.local_id,
+                    elevator.current_floor,
+                    elevator.current_direction,
+                    &elevator.call_buttons
+                ).unwrap_or_else(|e| eprintln!("Failed to persist state: {}", e));
+            }
         }
     }
 
@@ -277,7 +312,8 @@ impl ElevatorSystem {
                 elevator.current_direction,
                 elevator.call_buttons.len(),
                 floor,
-                direction
+                direction,
+                elevator.is_obstructed
             );
             all_costs.push((cost, self.local_id.clone()));
         }
@@ -293,10 +329,20 @@ impl ElevatorSystem {
                     state.direction,
                     state.call_buttons.len(),
                     floor,
-                    direction
+                    direction,
+                    state.is_obstructed
                 );
                 all_costs.push((cost, id.clone()));
             }
+        }
+
+        if all_costs.is_empty() {
+            println!("WARNING: No available elevators to assign call (floor {}, dir {})", 
+                     floor, direction_to_string(direction));
+            // Still update the hall call as unassigned
+            let mut hall_calls = self.hall_calls.lock().unwrap();
+            hall_calls.insert((floor, direction), (String::new(), timestamp));
+            return;
         }
         
         // Sort by cost (ascending) and then by id (ascending) for consistent tie-breaking
@@ -342,7 +388,43 @@ impl ElevatorSystem {
         }
     }
 
-    
+    fn process_calls_from_disconnected_elevators(&self, disconnected_ids: &[String]) {
+        // Step 1: Find all calls assigned to disconnected elevators
+        let mut calls_to_reassign = Vec::new();
+        {
+            let hall_calls = self.hall_calls.lock().unwrap();
+            for ((floor, direction), (assigned_to, timestamp)) in hall_calls.iter() {
+                if disconnected_ids.contains(assigned_to) {
+                    println!(
+                        "Found call (floor={}, direction={}) assigned to disconnected elevator {}",
+                        floor, direction_to_string(*direction), assigned_to
+                    );
+                    calls_to_reassign.push((*floor, *direction, *timestamp));
+                }
+            }
+        }
+        
+        // Step 2: Mark calls as unassigned first
+        {
+            let mut hall_calls = self.hall_calls.lock().unwrap();
+            for (floor, direction, timestamp) in &calls_to_reassign {
+                println!(
+                    "Marking call (floor={}, direction={}) as unassigned for reassignment",
+                    floor, direction_to_string(*direction)
+                );
+                hall_calls.insert((*floor, *direction), (String::new(), *timestamp));
+            }
+        }
+        
+        // Step 3: Reassign each call explicitly
+        for (floor, direction, timestamp) in calls_to_reassign {
+            println!(
+                "Actively reassigning call: floor={}, direction={}",
+                floor, direction_to_string(direction)
+            );
+            self.assign_hall_call(floor, direction, timestamp);
+        }
+    }
     
     // Handle a completed call
     fn complete_call(&self, floor: u8, direction: u8) {
@@ -372,8 +454,8 @@ impl ElevatorSystem {
             ElevatorMessage::HallCall { floor, direction, timestamp } => {
                 self.handle_hall_call_message(floor, direction, timestamp);
             },
-            ElevatorMessage::ElevatorState { id, floor, direction, call_buttons } => {
-                self.handle_elevator_state_message(id, floor, direction, call_buttons);
+            ElevatorMessage::ElevatorState { id, floor, direction, call_buttons, is_obstructed } => {
+                self.handle_elevator_state_message(id, floor, direction, call_buttons, is_obstructed);
             },
             ElevatorMessage::CompletedCall { floor, direction } => {
                 self.handle_completed_call_message(floor, direction);
@@ -391,56 +473,42 @@ impl ElevatorSystem {
             Ok(n) => n.as_secs(),
             Err(_) => 0,
         };
-
-        let timeout_duration = 10; // Keep timeout consistent (was 10 here, 5 in fault_handler)
+    
+        let timeout_duration = 5; // Match ELEVATOR_TIMEOUT in fault_handler.rs
         let mut disconnected_ids = Vec::new();
-
-        // Identify disconnected elevators
+    
+        // Identify disconnected elevators with more detailed logging
         {
             let elevator_states = self.elevator_states.lock().unwrap();
             for (id, state) in elevator_states.iter() {
-                // Use the consistent timeout_duration
-                if current_time.saturating_sub(state.last_seen) > timeout_duration {
+                let time_since_last_seen = current_time.saturating_sub(state.last_seen);
+                if time_since_last_seen > timeout_duration {
+                    println!(
+                        "Detected potential disconnect: ID={}, LastSeen={}, TimeSinceLastSeen={}s, Timeout={}s",
+                        id, state.last_seen, time_since_last_seen, timeout_duration
+                    );
                     disconnected_ids.push(id.clone());
                 }
             }
         }
-
-        // If disconnected elevators were found, process them
+    
+        // Process disconnected elevators
         if !disconnected_ids.is_empty() {
-            // Remove disconnected elevators from state tracking
+            // Remove from elevator states
             {
                 let mut elevator_states = self.elevator_states.lock().unwrap();
                 for id in &disconnected_ids {
-                    if elevator_states.remove(id).is_some() { // Only print if it was actually removed
-                       println!("Elevator {} disconnected", id);
+                    if elevator_states.remove(id).is_some() {
+                        println!("Elevator {} disconnected and removed from tracking", id);
                     }
                 }
-            } // Lock released here
-
-            // Find and reassign calls from disconnected elevators
-            let mut calls_to_reassign = Vec::new();
-            {
-                let hall_calls = self.hall_calls.lock().unwrap();
-                for ((floor, direction), (assigned_to, timestamp)) in hall_calls.iter() {
-                    // Check if the call was assigned to one of the elevators that just disconnected
-                    if disconnected_ids.contains(assigned_to) {
-                        // Add floor, direction, and timestamp for reassignment
-                        calls_to_reassign.push((*floor, *direction, *timestamp));
-                        println!("Detected call ({}, {}) assigned to disconnected elevator {}", floor, direction, assigned_to);
-                    }
-                }
-            } // Lock released here
-
-            // Reassign each identified call
-            // This needs to be done outside the hall_calls lock
-            for (floor, direction, timestamp) in calls_to_reassign {
-                println!("Reassigning hall call: floor {}, direction {}", floor, direction);
-                // Calling assign_hall_call will recalculate costs and assign to the best *available* elevator
-                self.assign_hall_call(floor, direction, timestamp);
             }
+    
+            // Find and explicitly mark calls for reassignment
+            self.process_calls_from_disconnected_elevators(&disconnected_ids);
         }
     }
+
 }
 
 // Function to start elevator movement based on its call queue
@@ -514,104 +582,6 @@ fn opposite_dir(dirn: u8) -> u8 {
 fn find_call_button_index(call_button: Vec<u8>,elevator: &mut Elevator) -> Option<usize> {
     elevator.call_buttons.iter().position(|call| call == &call_button)
 }
-
-/*
-// Function to handle calls when the elevator reaches a certain floor
-fn serve_call(elevator_system: &ElevatorSystem, floor: u8) {
-    let mut elevator = elevator_system.local_elevator.lock().unwrap();
-    
-    // If no calls to serve, return
-    if elevator.call_buttons.is_empty() {
-        return;
-    }
-
-    // Check if there is a call for this floor
-    
-    if let Some(pos) = elevator.call_buttons.iter().position(|call| call[0] == floor &&
-        (decide_direction_by_call(call[1]) == elevator.current_direction || call[1] == e::CAB)
-        || !is_more_request_in_dir(elevator.clone())) {
-
-        //find the serving call
-        let mut serving_call = vec![3,3];
-        if let Some(same_direction_pos) = elevator.call_buttons.iter().position(|call| call[0] == floor &&
-            (decide_direction_by_call(call[1]) == elevator.current_direction)) {
-            serving_call = elevator.call_buttons.get(same_direction_pos).unwrap().clone();
-            elevator.call_button_light(floor,serving_call[1], false);
-            elevator.call_buttons.remove(same_direction_pos);
-        }
-        else if let Some(opp_dir_pos) = elevator.call_buttons.iter().position(|call| !is_more_request_in_dir(elevator.clone())
-            && call[0] == floor && decide_direction_by_call(call[1]) == opposite_dir(elevator.current_direction)) {
-            serving_call = elevator.call_buttons.get(opp_dir_pos).unwrap().clone();
-            elevator.call_button_light(floor,serving_call[1], false);
-            elevator.call_buttons.remove(opp_dir_pos);
-        }
-        //find if there is a cab call too
-        if let Some(cab_call_pos) = elevator.call_buttons.iter().position(|call| call[0] == floor && call[1] == e::CAB) {
-            elevator.call_button_light(floor, e::CAB, false);
-            elevator.call_buttons.remove(cab_call_pos);
-        }
-
-        // Stop the elevator
-        elevator.motor_direction(e::DIRN_STOP);
-        //elevator.current_direction = e::DIRN_STOP;
-
-        let call_type = serving_call[1];
-        
-        // If this was a hall call, mark it as completed
-        if call_type != e::CAB {
-            // Need to drop the elevator lock before acquiring system locks
-            let completed_direction = call_type;
-            drop(elevator);
-            elevator_system.complete_call(floor, completed_direction);
-            elevator = elevator_system.local_elevator.lock().unwrap();
-        }
-
-        println!("Call for floor {} removed", floor);
-        
-        // Open door for 3 seconds
-        elevator.door_light(true);
-        std::thread::sleep(Duration::from_secs(3));
-
-        // Handle pending calls and decide next direction ;
-        if let Some(next_call) = decide_next_call(&mut *elevator) {
-
-            let next_floor = next_call[0];
-            let next_call_type = next_call[1];
-            let mut new_dir = if next_floor > floor {
-                e::DIRN_UP
-            } else if next_floor < floor {
-                e::DIRN_DOWN
-            } else {
-                let next_call_index = find_call_button_index(next_call.clone(), &mut *elevator).unwrap();
-                // If hall call, mark as completed
-                if next_call_type != e::CAB {
-                    // Need to drop the elevator lock before acquiring system locks
-                    drop(elevator);
-                    elevator_system.complete_call(floor, next_call_type);
-                    elevator = elevator_system.local_elevator.lock().unwrap();
-                }
-                elevator.call_button_light(floor, next_call_type, false);
-                elevator.call_buttons.remove(next_call_index);
-                e::DIRN_STOP
-
-            };
-            if let Some(next_call) = decide_next_call(&mut *elevator) {
-                if new_dir == e::DIRN_STOP {
-                    new_dir = hall_call_start_dir(next_call[0], floor, new_dir);
-                }
-            }
-            if new_dir == opposite_dir(elevator.current_direction) {
-                println!("Opposite direction");
-                sleep(Duration::from_secs(3));
-            }
-            elevator.door_light(false);
-            elevator.current_direction = new_dir;
-            elevator.motor_direction(new_dir);
-        }
-        elevator.door_light(false);
-    }
-}
-     */
 
      fn serve_call(elevator_system: &ElevatorSystem, floor: u8) {
         let mut elevator = elevator_system.local_elevator.lock().unwrap();
@@ -688,8 +658,44 @@ fn serve_call(elevator_system: &ElevatorSystem, floor: u8) {
         println!("Call for floor {} removed", floor);
     
         // Open door for 3 seconds.
+        // elevator.door_light(true);
+        // std::thread::sleep(Duration::from_secs(3));
+
+        // Open door and handle obstruction properly
         elevator.door_light(true);
-        std::thread::sleep(Duration::from_secs(3));
+
+        // Check for obstruction before starting the wait
+        if elevator.is_obstructed {
+            println!("Door kept open due to active obstruction");
+            // Release the elevator lock and return - let the main loop handle it
+            return;
+        }
+
+        // Release the lock while waiting to avoid blocking other operations
+        drop(elevator);
+
+        // Wait for door delay
+        let start_time = std::time::Instant::now();
+        let door_delay = Duration::from_secs(3);
+
+        // Check periodically for obstruction during the waiting period
+        while start_time.elapsed() < door_delay {
+            std::thread::sleep(Duration::from_millis(100)); // Check every 100ms
+            
+            // Check if obstruction is active
+            let is_blocked = {
+                let e = elevator_system.local_elevator.lock().unwrap();
+                e.is_obstructed
+            };
+            
+            if is_blocked {
+                println!("Door operation interrupted by obstruction");
+                return; // Exit early, let main loop handle it
+            }
+        }
+
+        // Reacquire the lock after waiting
+        elevator = elevator_system.local_elevator.lock().unwrap();
     
         // Decide next call.
         if let Some(next_call) = decide_next_call(&mut *elevator) {
@@ -915,6 +921,7 @@ fn main() -> std::io::Result<()> {
                                 floor: elevator.current_floor,
                                 direction: elevator.current_direction,
                                 call_buttons: elevator.call_buttons.clone(),
+                                is_obstructed: elevator.is_obstructed,
                             };
                             stream.write_all(msg.to_string().as_bytes()).unwrap_or(());
                         },
@@ -1127,22 +1134,82 @@ fn main() -> std::io::Result<()> {
             
             // Handle obstruction
             recv(obstruction_rx) -> obstruction => {
-                let mut obstr = obstruction.unwrap();
+                let obstr = obstruction.unwrap();
                 let mut elevator = elevator_system.local_elevator.lock().unwrap();
                 
-                if !elevator.floor_sensor().is_none() && obstr {
-                    println!("Obstruction: {:#?}", obstr);
+                // Only consider obstruction when at a floor
+                if elevator.floor_sensor().is_some() {
+                    let current_time = match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
+                        Ok(n) => n.as_secs(),
+                        Err(_) => 0,
+                    };
                     
-                    while obstr {
-                        elevator.motor_direction(e::DIRN_STOP);
-                        drop(elevator);
-                        obstr = obstruction_rx.recv().unwrap();
+                    // Update obstruction state
+                    elevator.is_obstructed = obstr;
+                    
+                    if obstr {
+                        println!("Obstruction detected at floor {}", elevator.current_floor);
+                        
+                        // Start tracking obstruction time
+                        if elevator.obstruction_start_time.is_none() {
+                            elevator.obstruction_start_time = Some(current_time);
+                            println!("Started obstruction timer at {}", current_time);
+                        }
+                        
+                        // Force the door to stay open
+                        elevator.door_light(true);
+                        
+                        // IMMEDIATELY reassign calls without waiting 10 seconds
+                        drop(elevator);  // Release lock before acquiring call locks
+                        
+                        // Find and reassign this elevator's calls
+                        let calls_to_reassign = {
+                            let mut calls = Vec::new();
+                            let hall_calls = elevator_system.hall_calls.lock().unwrap();
+                            
+                            for ((floor, direction), (assigned_to, timestamp)) in hall_calls.iter() {
+                                if assigned_to == &elevator_system.local_id {
+                                    calls.push((*floor, *direction, *timestamp));
+                                    println!("Immediately reassigning call (floor {}, dir {}) due to obstruction", 
+                                            floor, direction_to_string(*direction));
+                                }
+                            }
+                            calls
+                        };
+                        
+                        // Reassign each call
+                        for (floor, direction, timestamp) in calls_to_reassign {
+                            // Mark the call as unassigned
+                            {
+                                let mut hall_calls = elevator_system.hall_calls.lock().unwrap();
+                                hall_calls.insert((floor, direction), (String::new(), timestamp));
+                            }
+                            
+                            // Reassign the call
+                            elevator_system.assign_hall_call(floor, direction, timestamp);
+                        }
+                        
+                        // Re-acquire elevator lock
                         elevator = elevator_system.local_elevator.lock().unwrap();
+                    } else {
+                        // Obstruction cleared
+                        println!("Obstruction cleared at floor {}", elevator.current_floor);
+                        
+                        // Reset obstruction timer
+                        elevator.obstruction_start_time = None;
+                        
+                        // Allow door to close if no pending obstruction
+                        // Don't automatically close the door - let the main algorithm handle it
                     }
                 } else {
-                    obstr = false;
-                    println!("Obstruction: {:#?}", obstr);
+                    // Not at a floor, simply update state
+                    elevator.is_obstructed = obstr;
+                    println!("Obstruction state updated: {}", obstr);
                 }
+                
+                // Broadcast updated state to peers
+                drop(elevator);
+                elevator_system.broadcast_state();
             },
         }
     }

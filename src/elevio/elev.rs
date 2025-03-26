@@ -14,6 +14,8 @@ pub struct Elevator {
     pub call_buttons: Vec<Vec<u8>>,
     pub current_floor: u8,
     pub current_direction: u8,
+    pub is_obstructed: bool,
+    pub obstruction_start_time: Option<u64>
 }
 
 // Constants for the elevator call buttons
@@ -31,12 +33,13 @@ impl Elevator {
     // Initializes a new 'Elevator' by connecting a TCP socket to the server address
     pub fn init(addr: &str, num_floors: u8) -> Result<Elevator> {
         Ok(Self {
-            // Arc + Mutex is used to create a thread-safe reference counted pointer
             socket: Arc::new(Mutex::new(TcpStream::connect(addr)?)),
             num_floors,
             call_buttons: vec![],
             current_floor: 0,
             current_direction: DIRN_STOP,
+            is_obstructed: false,
+            obstruction_start_time: None,
         })
     }
 
