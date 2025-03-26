@@ -378,56 +378,65 @@ impl ElevatorSystem {
             ElevatorMessage::CompletedCall { floor, direction } => {
                 self.handle_completed_call_message(floor, direction);
             },
+            /* */
             ElevatorMessage::SyncRequest { id } => {
                 self.handle_sync_request(id);
             }
         }
     }
-    
+
     // Check for and handle disconnected elevators
     fn check_disconnected_elevators(&self) {
         let current_time = match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
             Ok(n) => n.as_secs(),
             Err(_) => 0,
         };
-        
+
+        let timeout_duration = 10; // Keep timeout consistent (was 10 here, 5 in fault_handler)
         let mut disconnected_ids = Vec::new();
-        
-        // Identify disconnected elevators (those not seen in the last 10 seconds)
+
+        // Identify disconnected elevators
         {
             let elevator_states = self.elevator_states.lock().unwrap();
             for (id, state) in elevator_states.iter() {
-                if current_time - state.last_seen > 10 {
+                // Use the consistent timeout_duration
+                if current_time.saturating_sub(state.last_seen) > timeout_duration {
                     disconnected_ids.push(id.clone());
                 }
             }
         }
-        
-        // Remove disconnected elevators
+
+        // If disconnected elevators were found, process them
         if !disconnected_ids.is_empty() {
-            let mut elevator_states = self.elevator_states.lock().unwrap();
-            for id in &disconnected_ids {
-                elevator_states.remove(id);
-                println!("Elevator {} disconnected", id);
-            }
-        }
-        
-        // Reassign calls from disconnected elevators
-        if !disconnected_ids.is_empty() {
-            let mut reassign_calls = Vec::new();
-            
+            // Remove disconnected elevators from state tracking
             {
-                let hall_calls = self.hall_calls.lock().unwrap();
-                
-                for ((floor, direction), (assigned_to, timestamp)) in hall_calls.iter() {
-                    if disconnected_ids.contains(assigned_to) {
-                        reassign_calls.push((*floor, *direction, *timestamp));
+                let mut elevator_states = self.elevator_states.lock().unwrap();
+                for id in &disconnected_ids {
+                    if elevator_states.remove(id).is_some() { // Only print if it was actually removed
+                       println!("Elevator {} disconnected", id);
                     }
                 }
-            }
-            
-            // Reassign each call
-            for (floor, direction, timestamp) in reassign_calls {
+            } // Lock released here
+
+            // Find and reassign calls from disconnected elevators
+            let mut calls_to_reassign = Vec::new();
+            {
+                let hall_calls = self.hall_calls.lock().unwrap();
+                for ((floor, direction), (assigned_to, timestamp)) in hall_calls.iter() {
+                    // Check if the call was assigned to one of the elevators that just disconnected
+                    if disconnected_ids.contains(assigned_to) {
+                        // Add floor, direction, and timestamp for reassignment
+                        calls_to_reassign.push((*floor, *direction, *timestamp));
+                        println!("Detected call ({}, {}) assigned to disconnected elevator {}", floor, direction, assigned_to);
+                    }
+                }
+            } // Lock released here
+
+            // Reassign each identified call
+            // This needs to be done outside the hall_calls lock
+            for (floor, direction, timestamp) in calls_to_reassign {
+                println!("Reassigning hall call: floor {}, direction {}", floor, direction);
+                // Calling assign_hall_call will recalculate costs and assign to the best *available* elevator
                 self.assign_hall_call(floor, direction, timestamp);
             }
         }
@@ -646,6 +655,14 @@ fn serve_call(elevator_system: &ElevatorSystem, floor: u8) {
         if let Some(cab_call_pos) = elevator.call_buttons.iter().position(|call| call[0] == floor && call[1] == e::CAB) {
             elevator.call_button_light(floor, e::CAB, false);
             elevator.call_buttons.remove(cab_call_pos);
+
+            println!("Persisting state after removing extra cab call at floor {}", floor);
+             fault_handler::persist_elevator_state(
+                 &elevator_system.local_id,
+                 elevator.current_floor,
+                 elevator.current_direction,
+                 &elevator.call_buttons
+             ).unwrap_or_else(|e| eprintln!("Failed to persist state: {}", e));
         }
     
         // Stop the elevator.
@@ -658,6 +675,14 @@ fn serve_call(elevator_system: &ElevatorSystem, floor: u8) {
             drop(elevator);
             elevator_system.complete_call(floor, completed_direction);
             elevator = elevator_system.local_elevator.lock().unwrap();
+        } else {
+            println!("Persisting state after serving cab call at floor {}", floor);
+            fault_handler::persist_elevator_state(
+                &elevator_system.local_id,
+                elevator.current_floor,
+                elevator.current_direction,
+                &elevator.call_buttons
+            ).unwrap_or_else(|e| eprintln!("Failed to persist state: {}", e));
         }
     
         println!("Call for floor {} removed", floor);
@@ -675,14 +700,30 @@ fn serve_call(elevator_system: &ElevatorSystem, floor: u8) {
             } else if next_floor < floor {
                 e::DIRN_DOWN
             } else {
+                let is_immediate_cab_call = next_call_type == e::CAB;
+
                 let next_call_index = find_call_button_index(next_call.clone(), &mut *elevator).unwrap();
-                if next_call_type != e::CAB {
+
+
+
+                if !is_immediate_cab_call {
                     drop(elevator);
                     elevator_system.complete_call(floor, next_call_type);
                     elevator = elevator_system.local_elevator.lock().unwrap();
                 }
                 elevator.call_button_light(floor, next_call_type, false);
                 elevator.call_buttons.remove(next_call_index);
+
+                if is_immediate_cab_call {
+                    println!("Persisting state after serving immediate cab call at floor {}", floor);
+                    fault_handler::persist_elevator_state(
+                        &elevator_system.local_id,
+                        elevator.current_floor,
+                        elevator.current_direction, // Should be DIRN_STOP here
+                        &elevator.call_buttons
+                    ).unwrap_or_else(|e| eprintln!("Failed to persist state: {}", e));
+                }
+
                 e::DIRN_STOP
             };
             if let Some(next_call) = decide_next_call(&mut *elevator) {
@@ -820,15 +861,7 @@ fn main() -> std::io::Result<()> {
     // Initialize network
     let network_port = 7878 + elev_port - 15657; // Network ports start at 7878
     let network_manager = p2p_connect::start_peer_manager(network_port);
-    
-    // Initialize elevator system
-    /*
-    let elevator_system = Arc::new(ElevatorSystem::new(
-        elev_id.clone(),
-        elevator.clone(),
-        Arc::clone(&network_manager)
-    ));
-    */
+
     
     // Initialize elevator system
     let elevator_system = Arc::new(ElevatorSystem::new(
@@ -875,6 +908,7 @@ fn main() -> std::io::Result<()> {
                     //    (If you still want to replicate the original handshake logic)
                     match std::net::TcpStream::connect(&peer_addr) {
                         Ok(mut stream) => {
+                            println!("Connection to {} successful, sending initial state.", peer_addr);
                             let elevator = elevator_system_clone.local_elevator.lock().unwrap();
                             let msg = ElevatorMessage::ElevatorState {
                                 id: elevator_system_clone.local_id.clone(),
@@ -885,13 +919,14 @@ fn main() -> std::io::Result<()> {
                             stream.write_all(msg.to_string().as_bytes()).unwrap_or(());
                         },
                         Err(e) => {
-                            println!("Failed to connect directly to peer at {}: {}", &peer_addr, e);
+                            // println!("Failed to connect directly to peer at {}: {}", &peer_addr, e);
                         }
                     }
     
                     // Sleep a bit and retry
                     thread::sleep(Duration::from_secs(1));
                 }
+                println!("Finished connection attempts for peer: {}", peer_addr);
             });
         }
     }
@@ -966,20 +1001,33 @@ fn main() -> std::io::Result<()> {
             recv(call_button_rx) -> button_type => {
                 let call_button = button_type.unwrap();
                 println!("Call button pressed: {:#?}", call_button);
-                
+
                 if call_button.call == e::CAB {
                     // Handle cab call locally
                     let mut elevator = elevator_system.local_elevator.lock().unwrap();
                     elevator.call_button_light(call_button.floor, call_button.call, true);
-                    
+
                     // Add to local queue
                     let callbutton = vec![call_button.floor, call_button.call];
                     if !elevator.call_buttons.iter().any(|x| x == &callbutton) {
-                        elevator.call_buttons.push(callbutton);
+                        elevator.call_buttons.push(callbutton.clone()); // Clone here
+
+                        // --- Added Persistence Call ---
+                        println!("Persisting state after adding cab call: floor {}, call {}", call_button.floor, call_button.call);
+                        fault_handler::persist_elevator_state(
+                            &elevator_system.local_id,
+                            elevator.current_floor,
+                            elevator.current_direction,
+                            &elevator.call_buttons // Pass reference
+                        ).unwrap_or_else(|e| eprintln!("Failed to persist state: {}", e));
+                        // --- End of Added Persistence Call ---
+
                     }
-                    
+
                     // Start elevator if needed
-                    start_elevator(&mut elevator, call_button.floor, 0);
+                    // Pass callbutton floor and a placeholder direction (0) as start_elevator recalculates if needed
+                    start_elevator(&mut elevator, callbutton[0], 0); // Use callbutton[0]
+
                 } else {
                     // Handle hall call through the elevator system
                     elevator_system.process_hall_call(call_button.floor, call_button.call);
@@ -1009,31 +1057,70 @@ fn main() -> std::io::Result<()> {
             recv(stop_button_rx) -> stop_btn => {
                 let stop = stop_btn.unwrap();
                 println!("Stop button: {:?}", stop);
-                
+
                 if stop {
-                    let mut elevator = elevator_system.local_elevator.lock().unwrap();
-                    
-                    // Immediately stop the elevator
-                    elevator.motor_direction(e::DIRN_STOP);
-                    elevator.current_direction = e::DIRN_STOP;
-                    
-                    // Turn off all call button lights
-                    for f in 0..elev_num_floors {
-                        for c in 0..3 {
-                            elevator.call_button_light(f, c, false);
+                    let local_id = elevator_system.local_id.clone(); // Clone id for use after lock drop
+                    let mut calls_to_reassign = Vec::new();
+
+                    { // Scope for elevator lock
+                        let mut elevator = elevator_system.local_elevator.lock().unwrap();
+
+                        // Immediately stop the elevator
+                        elevator.motor_direction(e::DIRN_STOP);
+                        elevator.current_direction = e::DIRN_STOP;
+
+                        // Turn off all call button lights (local elevator only)
+                        for f in 0..elev_num_floors {
+                            for c in 0..3 {
+                                elevator.call_button_light(f, c, false);
+                            }
                         }
+
+                        // Clear local pending call requests (cab calls and assigned hall calls)
+                        elevator.call_buttons.clear();
+
+                        // --- Start of Added Reassignment Logic ---
+                        // Find hall calls assigned to this elevator
+                        { // Scope for hall_calls lock
+                            let hall_calls = elevator_system.hall_calls.lock().unwrap();
+                            for ((floor, direction), (assigned_to, timestamp)) in hall_calls.iter() {
+                                if *assigned_to == local_id {
+                                    // Collect floor, direction, and timestamp of calls assigned to this stopped elevator
+                                    calls_to_reassign.push((*floor, *direction, *timestamp));
+                                    println!("Stop button: Marking call ({}, {}) for reassignment from {}", floor, direction, local_id);
+                                }
+                            }
+                        } // hall_calls lock released here
+                        // --- End of Added Reassignment Logic ---
+
+
+                        // Open the door if at a floor
+                        if elevator.floor_sensor().is_some() {
+                            elevator.door_light(true);
+                            // Note: Blocking sleep, consider async/timer if this becomes an issue
+                            std::thread::sleep(Duration::from_secs(3));
+                            elevator.door_light(false);
+                        }
+
+                        // Persist the cleared state (optional but good practice)
+                        fault_handler::persist_elevator_state(
+                            &local_id,
+                            elevator.current_floor,
+                            elevator.current_direction,
+                            &elevator.call_buttons
+                        ).unwrap_or_else(|e| eprintln!("Failed to persist state after stop: {}", e));
+
+                    } // elevator lock released here
+
+                    // Reassign the collected hall calls outside the elevator lock
+                    for (floor, direction, timestamp) in calls_to_reassign {
+                         println!("Stop button: Reassigning hall call: floor {}, direction {}", floor, direction);
+                         // Trigger reassignment by the system
+                         elevator_system.assign_hall_call(floor, direction, timestamp);
                     }
-                    
-                    // Clear pending call requests
-                    elevator.call_buttons.clear();
-                    
-                    // Open the door
-                    elevator.door_light(true);
-                    std::thread::sleep(Duration::from_secs(3));
-                    elevator.door_light(false);
-                    
-                    // Broadcast updated state
-                    drop(elevator);
+
+
+                    // Broadcast updated (stopped) state
                     elevator_system.broadcast_state();
                 }
             },
