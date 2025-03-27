@@ -58,7 +58,7 @@ pub fn start_reconnection_service(elevator_system: Arc<ElevatorSystem>) {
                         
                     // Try to establish bidirectional connection
                     elevator_system.establish_bidirectional_connection(&peer_addr);
-                    elevator_system.establish_bidirectional_connection(&peer_addr_2);
+                    // elevator_system.establish_bidirectional_connection(&peer_addr_2);
                 }
             }
         }
