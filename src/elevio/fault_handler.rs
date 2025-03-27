@@ -8,7 +8,7 @@ use std::thread;
 
 // Constants for heartbeat timing
 const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
-const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(2);
+// const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(2);
 const ELEVATOR_TIMEOUT: Duration = Duration::from_secs(5); // Time to consider an elevator disconnected
 
 // Structure to track elevator health
