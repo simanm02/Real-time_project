@@ -1,16 +1,15 @@
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{SystemTime, Duration}; // Add SystemTime
+use std::time::{SystemTime, Duration};
 use std::env;
-use std::io::Write; // Add Write for TcpStream operations
+use std::io::Write;
 use crossbeam_channel as cbc;
 
 use driver_rust::elevio;
 use driver_rust::elevio::elev as e;
-use driver_rust::elevio::elev::Elevator;
 use driver_rust::network::p2p_connect;
 use driver_rust::elevio::fault_handler;
-use driver_rust::elevio::cost::ElevatorMessage; // Add this import
+use driver_rust::elevio::cost::ElevatorMessage;
 use driver_rust::elevio::system::{
     ElevatorSystem, 
     start_reconnection_service, 
@@ -83,8 +82,11 @@ fn main() -> std::io::Result<()> {
     // Try to connect to other potential elevators
     for i in 0..3 {
         if i != (elev_port - 15657) as usize {
-            let peer_message_port = 8878 + i;
+            let peer_message_port = 8878 ;
+            //ip adresses are hardcoded for now
             let peer_addr = format!("localhost:{}", peer_message_port);
+
+            let peer_addr_2 = format!("localhost:{}", peer_message_port);
             let elevator_system_clone = Arc::clone(&elevator_system);
     
             thread::spawn(move || {
@@ -95,12 +97,15 @@ fn main() -> std::io::Result<()> {
                         Arc::clone(&elevator_system_clone.network_manager), 
                         &peer_addr
                     );
-    
+                    p2p_connect::connect(
+                        Arc::clone(&elevator_system_clone.network_manager), 
+                        &peer_addr_2
+                    );
                     // 2) Add the peer to our local ElevatorSystem list (so we know about it)
                     elevator_system_clone.add_peer(peer_addr.clone());
+                    elevator_system_clone.add_peer(peer_addr_2.clone());
     
-                    // 3) Optionally send initial elevator state directly to that peer
-                    //    (If you still want to replicate the original handshake logic)
+                    // 3) Send our initial state to the peer
                     match std::net::TcpStream::connect(&peer_addr) {
                         Ok(mut stream) => {
                             println!("Connection to {} successful, sending initial state.", peer_addr);
@@ -115,7 +120,7 @@ fn main() -> std::io::Result<()> {
                             stream.write_all(msg.to_string().as_bytes()).unwrap_or(());
                         },
                         Err(e) => {
-                            // println!("Failed to connect directly to peer at {}: {}", &peer_addr, e);
+                            println!("Failed to connect directly to peer at {}: {}", &peer_addr, e);
                         }
                     }
     

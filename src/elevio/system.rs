@@ -54,9 +54,11 @@ pub fn start_reconnection_service(elevator_system: Arc<ElevatorSystem>) {
                 if i as usize != elevator_id - 1 {
                     let peer_message_port = 8878 + i;
                     let peer_addr = format!("localhost:{}", peer_message_port);
+                    let peer_addr_2 = format!("localhost:{}", peer_message_port);
                         
                     // Try to establish bidirectional connection
                     elevator_system.establish_bidirectional_connection(&peer_addr);
+                    elevator_system.establish_bidirectional_connection(&peer_addr_2);
                 }
             }
         }
@@ -181,7 +183,6 @@ impl ElevatorSystem {
                 }
             },
             Err(e) => {
-                // Don't spam with connection errors, just return false
                 return false;
             }
         }

@@ -27,34 +27,6 @@ impl NetworkManager {
 
     /// Üzenet küldése egy adott peernek
     /// Sending a message to a specific peer
-    /*
-    pub fn send_message(&self, addr: &str, message: &str) {
-        if let Some(stream) = self.peers.lock().unwrap().get_mut(addr) {
-            stream.write_all(message.as_bytes()).unwrap();
-        } 
-        /*
-        else {
-            println!("Peer {} not found!", addr);
-        } */
-    }
-
-    /// Send a message to all connected peers
-    pub fn broadcast_message(&self, message: &str) {
-        let peers = self.peers.lock().unwrap();
-        
-        for (addr, stream) in peers.iter() {
-            match stream.try_clone() {
-                Ok(mut stream) => {
-                    if let Err(e) = stream.write_all(message.as_bytes()) {
-                        println!("Failed to send to {}: {}", addr, e);
-                    }
-                },
-                Err(e) => println!("Failed to clone stream for {}: {}", addr, e),
-            }
-        }
-    }
-    */
-
     pub fn send_message(&self, addr: &str, message: &str) {
         let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(stream) = peers.get_mut(addr) {
