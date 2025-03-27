@@ -103,6 +103,7 @@ fn main() -> std::io::Result<()> {
                     //    (If you still want to replicate the original handshake logic)
                     match std::net::TcpStream::connect(&peer_addr) {
                         Ok(mut stream) => {
+                            println!("Connection to {} successful, sending initial state.", peer_addr);
                             let elevator = elevator_system_clone.local_elevator.lock().unwrap();
                             let msg = ElevatorMessage::ElevatorState {
                                 id: elevator_system_clone.local_id.clone(),

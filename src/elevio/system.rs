@@ -110,9 +110,8 @@ pub fn message_listener(elevator_system: Arc<ElevatorSystem>, port: u16, fault_m
         loop {
             match rx.recv_timeout(Duration::from_millis(500)) {
                 Ok((message, from_addr)) => {
-                    
                     if let Some(parsed_msg) = ElevatorMessage::from_string(&message) {
-                        // println!("Message from {} received: {}", from_addr, message);
+
                         if let ElevatorMessage::ElevatorState { ref id, .. } = parsed_msg {
                             fault_monitor.lock().unwrap().record_heartbeat(id);
                         }
@@ -159,19 +158,14 @@ impl ElevatorSystem {
     
     
     pub fn establish_bidirectional_connection(&self, peer_addr: &str) -> bool {
-        // First check if we already have a connection
-        if self.network_manager.peers.lock().unwrap().contains_key(peer_addr) {
-            return true; // Already connected
-        }
-        
-        // Try to connect
+        // 1. Try to connect first to verify peer is available
         match std::net::TcpStream::connect(peer_addr) {
-            Ok(_) => {
-                // Peer is available, add to our list and connect
+            Ok(mut stream) => {
+                // Peer is available, proceed with connection
                 self.add_peer(peer_addr.to_string());
                 p2p_connect::connect(Arc::clone(&self.network_manager), peer_addr);
                 
-                // Send our state (use broadcast_message instead of direct stream write)
+                // Send our state 
                 let elevator = self.local_elevator.lock().unwrap();
                 let msg = ElevatorMessage::ElevatorState {
                     id: self.local_id.clone(),
@@ -181,17 +175,17 @@ impl ElevatorSystem {
                     is_obstructed: elevator.is_obstructed,
                 };
                 
-                // Broadcast to all peers (including the new one)
-                self.broadcast_message(&msg.to_string());
-                
-                println!("Successfully established connection with {}", peer_addr);
-                true
+                if stream.write_all(msg.to_string().as_bytes()).is_ok() {
+                    println!("Successfully established connection with {}", peer_addr);
+                    return true;
+                }
             },
-            Err(_) => {
-                // Connection failed
-                false
+            Err(e) => {
+                // Don't spam with connection errors, just return false
+                return false;
             }
         }
+        false
     }
 
     pub fn handle_sync_request(&self, requesting_id: String) {
@@ -216,9 +210,10 @@ impl ElevatorSystem {
     
     // Broadcast a message to all peers
     pub fn broadcast_message(&self, message: &str) {
-        self.network_manager.broadcast_message(message);
-        
-        //println!("Broadcasting message: {}", message);
+        let peers = self.peers.lock().unwrap();
+        for addr in &*peers {
+            p2p_connect::send(Arc::clone(&self.network_manager), addr, message);
+        }
     }
     
     // Broadcast local elevator state to all peers
@@ -233,7 +228,6 @@ impl ElevatorSystem {
             is_obstructed: elevator.is_obstructed,
         };
         
-        // Use the single broadcast_message function
         self.broadcast_message(&msg.to_string());
     }
 
@@ -442,12 +436,12 @@ impl ElevatorSystem {
         if let Some((_, best_id)) = all_costs.first() {
             let best_id = best_id.clone();
             
+            // Only print if this elevator is the one assigned to handle the call
             if best_id == self.local_id {
                 println!("Hall call (floor {}, dir {}) assigned to this elevator", 
                     floor, direction_to_string(direction));
-            } else {
-                println!("Hall call(floor {}, dir{}) assigned to elevator {}", floor, direction_to_string(direction), best_id);
             }
+                
             // Update hall call assignment
             {
                 let mut hall_calls = self.hall_calls.lock().unwrap();
@@ -525,22 +519,11 @@ impl ElevatorSystem {
             direction,
         };
         
-        // self.broadcast_message(&msg.to_string());
-
-        let message = &msg.to_string();
-        // println!("(In fn complete_call: Broadcasting to all elevators: {}", message);
-
-        // First immediate broadcast
-        self.network_manager.broadcast_message(&message);
-        
-        
+        self.broadcast_message(&msg.to_string());
     }
     
     /// Process a message received from another elevator
     pub fn process_message(&self, message: ElevatorMessage, from_addr: Option<String>) {
-        // Store whether the message came from a real address
-        let has_from_addr = from_addr.is_some();
-        
         // If we got this message from a specific address, make sure it's in our peer list
         if let Some(addr) = from_addr {
             self.add_peer(addr);
@@ -548,33 +531,15 @@ impl ElevatorSystem {
         
         match message {
             ElevatorMessage::HallCall { floor, direction, timestamp } => {
-                // println!("Handling hall call message.");
                 self.handle_hall_call_message(floor, direction, timestamp);
             },
             ElevatorMessage::ElevatorState { id, floor, direction, call_buttons, is_obstructed } => {
                 self.handle_elevator_state_message(id, floor, direction, call_buttons, is_obstructed);
             },
             ElevatorMessage::CompletedCall { floor, direction } => {
-                // Process the call completion locally
                 self.handle_completed_call_message(floor, direction);
-                
-                if has_from_addr {
-                    // Add a small delay before rebroadcasting to prevent network congestion
-                    let network_manager_clone = Arc::clone(&self.network_manager);
-                    let floor_clone = floor;
-                    let direction_clone = direction;
-                    
-                    thread::spawn(move || {
-                        thread::sleep(Duration::from_millis(100));
-                        let msg = ElevatorMessage::CompletedCall { 
-                            floor: floor_clone, 
-                            direction: direction_clone 
-                        };
-                        // Use the network manager to broadcast
-                        // network_manager_clone.broadcast_message(&msg.to_string());
-                    });
-                }
             },
+            /* */
             ElevatorMessage::SyncRequest { id } => {
                 self.handle_sync_request(id);
             }

@@ -7,7 +7,7 @@ use std::thread;
 /// PeerManager: több kapcsolatot kezel egyszerre
 /// PeerManager: manages multiple connections simultaneously
 pub struct NetworkManager {
-    pub peers: Arc<Mutex<HashMap<String, TcpStream>>>,
+    peers: Arc<Mutex<HashMap<String, TcpStream>>>,
 }
 
 impl NetworkManager {
@@ -27,6 +27,7 @@ impl NetworkManager {
 
     /// Üzenet küldése egy adott peernek
     /// Sending a message to a specific peer
+    /*
     pub fn send_message(&self, addr: &str, message: &str) {
         if let Some(stream) = self.peers.lock().unwrap().get_mut(addr) {
             stream.write_all(message.as_bytes()).unwrap();
@@ -40,7 +41,7 @@ impl NetworkManager {
     /// Send a message to all connected peers
     pub fn broadcast_message(&self, message: &str) {
         let peers = self.peers.lock().unwrap();
-        // println!("Broadcasting message to all peers: {}", message);
+        
         for (addr, stream) in peers.iter() {
             match stream.try_clone() {
                 Ok(mut stream) => {
@@ -52,9 +53,9 @@ impl NetworkManager {
             }
         }
     }
-    
-/*
-pub fn send_message(&self, addr: &str, message: &str) {
+    */
+
+    pub fn send_message(&self, addr: &str, message: &str) {
         let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(stream) = peers.get_mut(addr) {
             if let Err(e) = stream.write_all(message.as_bytes()) {
@@ -77,7 +78,6 @@ pub fn send_message(&self, addr: &str, message: &str) {
             peers.remove(&addr);
         }
     }
-*/
     
     
 
