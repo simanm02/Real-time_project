@@ -229,7 +229,7 @@ pub fn serve_call(elevator_system: &ElevatorSystem, floor: u8) {
                 fault_handler::persist_elevator_state(
                     &elevator_system.local_id,
                     elevator.current_floor,
-                    elevator.current_direction, // Should be DIRN_STOP here
+                    elevator.current_direction,
                     &elevator.call_buttons
                 ).unwrap_or_else(|e| eprintln!("Failed to persist state: {}", e));
             }

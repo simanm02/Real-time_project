@@ -14,15 +14,21 @@ pub fn calculate_cost(
     }
     let mut cost = 0;
     
-    // Base cost is the distance
-    let floor_distance = if current_floor > call_floor {
-        (current_floor - call_floor) as i32
+    // Give a MAJOR bonus if elevator is already at the call floor
+    if current_floor == call_floor {
+        cost -= 100;  // Large bonus for being at the requested floor
     } else {
-        (call_floor - current_floor) as i32
-    };
+        // Original distance calculation only if not at the floor
+        let floor_distance = if current_floor > call_floor {
+            (current_floor - call_floor) as i32
+        } else {
+            (call_floor - current_floor) as i32
+        };
+        
+        cost += floor_distance * 10;
+    }
     
-    cost += floor_distance * 10;
-    
+    // Rest of the function remains the same
     // Add cost for each pending call
     cost += call_buttons_len as i32 * 5;
     
@@ -158,8 +164,16 @@ impl ElevatorMessage {
                     is_obstructed 
                 })
             },
-            // Rest of the code remains the same
-            // ...
+            "COMPLETED" => {
+                if parts.len() < 3 {
+                    return None;
+                }
+                
+                let floor = parts[1].parse::<u8>().ok()?;
+                let direction = parts[2].parse::<u8>().ok()?;
+                
+                Some(ElevatorMessage::CompletedCall { floor, direction })
+            },
             _ => None,
         }
     }
