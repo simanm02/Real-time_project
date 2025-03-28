@@ -18,17 +18,15 @@ use crate::control::{
 
 // Structure to hold shared state for all elevators in the system
 pub struct ElevatorSystem {
-    // Local elevator state
     pub local_id: String,
     pub local_elevator: Arc<Mutex<Elevator>>,
     
-    // Global system state
-    pub hall_calls: Arc<Mutex<HashMap<(u8, u8), (String, u64)>>>, // (floor, direction) -> (aigned_to,ss timestamp)
+    pub hall_calls: Arc<Mutex<HashMap<(u8, u8), (String, u64)>>>,
     pub elevator_states: Arc<Mutex<HashMap<String, ElevatorState>>>,
     
-    // Network communication
+
     pub network_manager: Arc<p2p_connect::NetworkManager>,
-    pub peers: Arc<Mutex<Vec<String>>>, // Store peer addresses separately
+    pub peers: Arc<Mutex<Vec<String>>>,
 }
 
 // Structure to keep track of other elevator states
@@ -37,7 +35,7 @@ pub struct ElevatorState {
     pub floor: u8,
     pub direction: u8,
     pub call_buttons: Vec<Vec<u8>>,
-    pub last_seen: u64, // Timestamp of last update
+    pub last_seen: u64,
     pub is_obstructed: bool,
     pub obstruction_duration: u64,
 }
@@ -53,13 +51,26 @@ pub fn start_reconnection_service(elevator_system: Arc<ElevatorSystem>) {
                 let elevator_id = elevator_system.local_id.parse::<usize>().unwrap_or(0);
                 if i as usize != elevator_id - 1 {
                     let peer_message_port = 8878 + i;
+
+
+                    // Comment out if using simulator setup:
+                    // ----- Simulator setup begin here: -----
                     let peer_addr = format!("localhost:{}", peer_message_port);
-                    // let peer_addr = format!("10.24.139.104:{}", peer_message_port);
-                    // let peer_addr_2 = format!("10.100.23.35:{}", peer_message_port);
+                    elevator_system.establish_bidirectional_connection(&peer_addr);
+                    // ----- Simulator setup end here: -----
+                    
+
+                    // Uncomment and type correct IP if using physical setup:
+                    /*
+                    // ----- Physical machine begin here: -----
+                    let peer_addr = format!("10.24.139.104:{}", peer_message_port);
+                    let peer_addr_2 = format!("10.100.23.35:{}", peer_message_port);
                         
                     // Try to establish bidirectional connection
                     elevator_system.establish_bidirectional_connection(&peer_addr);
-                    // elevator_system.establish_bidirectional_connection(&peer_addr_2);
+                    elevator_system.establish_bidirectional_connection(&peer_addr_2);
+                    // ----- Physical machine end here -----
+                    */
                 }
             }
         }
@@ -73,7 +84,7 @@ pub fn message_listener(elevator_system: Arc<ElevatorSystem>, port: u16, fault_m
     println!("Message listener started on port {}", port);
     
     // Create a channel for passing messages to the processor
-    let (tx, rx) = cbc::unbounded::<(String, String)>(); // (message, from_addr)
+    let (tx, rx) = cbc::unbounded::<(String, String)>();
     
     // Accept connections and handle messages
     thread::spawn(move || {
@@ -182,7 +193,6 @@ impl ElevatorSystem {
                 };
                 
                 if stream.write_all(msg.to_string().as_bytes()).is_ok() {
-                    // println!("Successfully established connection with {}", peer_addr);
                     return true;
                 }
             },
@@ -207,7 +217,6 @@ impl ElevatorSystem {
             // Find the address for this elevator ID
             let peers = self.peers.lock().unwrap();
             for peer_addr in &*peers {
-                // Here we're sending to all peers, but ideally would target just the requesting elevator
                 p2p_connect::send(Arc::clone(&self.network_manager), peer_addr, &sync_msg.to_string());
             }
         }
@@ -240,7 +249,7 @@ impl ElevatorSystem {
         println!("DEBUG: Received hall call message for floor {}, direction {}", 
                  floor, direction_to_string(direction));
         
-        // ALWAYS turn on the hall call light first (unconditionally)
+        // Always turn on the hall call light first
         {
             let elevator = self.local_elevator.lock().unwrap();
             elevator.call_button_light(floor, direction, true);
@@ -365,7 +374,7 @@ impl ElevatorSystem {
             }
         };
         
-        // ALWAYS turn off the hall call light, regardless of who it was assigned to
+        // Always turn off the hall call light, regardless of who it was assigned to
         {
             let elevator = self.local_elevator.lock().unwrap();
             elevator.call_button_light(floor, direction, false);
@@ -394,21 +403,13 @@ impl ElevatorSystem {
         }
     }
 
-
-    
-    // Assign a hall call to the best elevator
-    // that properly handles ties in cost calculation
-
-    
-
     pub fn assign_hall_call(&self, floor: u8, direction: u8, timestamp: u64) {
         // Check if call is already assigned
         {
             let hall_calls = self.hall_calls.lock().unwrap();
             if let Some((assigned_id, existing_ts)) = hall_calls.get(&(floor, direction)) {
-                // If already assigned to someone, and no "newer" timestamp, do nothing
+                // If already assigned to someone, and no newer timestamp, do nothing
                 if !assigned_id.is_empty() && *existing_ts == timestamp {
-                    // Don't print anything - reduces console spam
                     return;
                 }
             }
@@ -458,7 +459,7 @@ impl ElevatorSystem {
             return;
         }
         
-        // Sort by cost (ascending) and then by id (ascending) for consistent tie-breaking
+        // Sort by cost and then id for tie-breaks.
         all_costs.sort_by(|a, b| {
             match a.0.cmp(&b.0) {
                 std::cmp::Ordering::Equal => a.1.cmp(&b.1),
@@ -558,7 +559,7 @@ impl ElevatorSystem {
     
     /// Process a message received from another elevator
     pub fn process_message(&self, message: ElevatorMessage, from_addr: Option<String>) {
-        // If we got this message from a specific address, make sure it's in our peer list
+        // Check if message comes from a peer
         if let Some(addr) = from_addr {
             self.add_peer(addr);
         }
@@ -573,7 +574,6 @@ impl ElevatorSystem {
             ElevatorMessage::CompletedCall { floor, direction } => {
                 self.handle_completed_call_message(floor, direction);
             },
-            /* */
             ElevatorMessage::SyncRequest { id } => {
                 self.handle_sync_request(id);
             }
@@ -587,7 +587,7 @@ impl ElevatorSystem {
             Err(_) => 0,
         };
     
-        let timeout_duration = 5; // Match ELEVATOR_TIMEOUT in fault_handler.rs
+        let timeout_duration = 5;
         let mut disconnected_ids = Vec::new();
     
         // Identify disconnected elevators with more detailed logging
@@ -617,7 +617,6 @@ impl ElevatorSystem {
                 }
             }
     
-            // Find and explicitly mark calls for reassignment
             self.process_calls_from_disconnected_elevators(&disconnected_ids);
         }
     }

@@ -14,9 +14,9 @@ pub fn calculate_cost(
     }
     let mut cost = 0;
     
-    // Give a MAJOR bonus if elevator is already at the call floor
+    // Give a large bonus if elevator is already at the call floor
     if current_floor == call_floor {
-        cost -= 100;  // Large bonus for being at the requested floor
+        cost -= 100;
     } else {
         // Original distance calculation only if not at the floor
         let floor_distance = if current_floor > call_floor {
@@ -55,14 +55,12 @@ pub fn calculate_cost(
 /// Message types for elevator network communication
 #[derive(Debug, Clone)]
 pub enum ElevatorMessage {
-    /// Message for a new hall call
     HallCall { 
         floor: u8, 
         direction: u8, 
         timestamp: u64 
     },
     
-    /// Message containing an elevator's current state
     ElevatorState { 
         id: String, 
         floor: u8, 
@@ -71,7 +69,6 @@ pub enum ElevatorMessage {
         is_obstructed: bool, 
     },
     
-    /// Message indicating a call has been completed
     CompletedCall { 
         floor: u8, 
         direction: u8 
@@ -149,7 +146,7 @@ impl ElevatorMessage {
                     }
                 }
                 
-                // Check if obstruction info is included (for backward compatibility)
+                // Check if obstruction info is included
                 let is_obstructed = if parts.len() > 5 {
                     parts[5].parse::<u8>().ok()? != 0
                 } else {

@@ -1,16 +1,12 @@
-// Implementation for src/elevio/fault_handler.rs
-// This module will handle fault detection and recovery
-
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 use std::thread;
 
 use crate::elevio::system::ElevatorSystem;
 
 // Constants for heartbeat timing
 const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
-// const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(2);
 const ELEVATOR_TIMEOUT: Duration = Duration::from_secs(5); // Time to consider an elevator disconnected
 
 // Structure to track elevator health
@@ -93,7 +89,7 @@ pub fn start_health_monitoring(
 ) {
     thread::spawn(move || {
         loop {
-            // Sleep for a bit before checking
+            // Sleep before checking
             thread::sleep(HEARTBEAT_INTERVAL);
             
             // Check for disconnected elevators

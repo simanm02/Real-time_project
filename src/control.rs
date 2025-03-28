@@ -161,17 +161,13 @@ pub fn serve_call(elevator_system: &ElevatorSystem, floor: u8) {
 
     println!("Call for floor {} removed", floor);
 
-    // Open door for 3 seconds.
-    // elevator.door_light(true);
-    // std::thread::sleep(Duration::from_secs(3));
-
     // Open door and handle obstruction properly
     elevator.door_light(true);
 
     // Check for obstruction before starting the wait
     if elevator.is_obstructed {
         println!("Door kept open due to active obstruction");
-        // Release the elevator lock and return - let the main loop handle it
+        // Release the elevator lock and return it to main loop
         return;
     }
 
@@ -194,7 +190,7 @@ pub fn serve_call(elevator_system: &ElevatorSystem, floor: u8) {
         
         if is_blocked {
             println!("Door operation interrupted by obstruction");
-            return; // Exit early, let main loop handle it
+            return; // Goes to main loop
         }
     }
 
@@ -229,7 +225,7 @@ pub fn serve_call(elevator_system: &ElevatorSystem, floor: u8) {
                 fault_handler::persist_elevator_state(
                     &elevator_system.local_id,
                     elevator.current_floor,
-                    elevator.current_direction, // Should be DIRN_STOP here
+                    elevator.current_direction,
                     &elevator.call_buttons
                 ).unwrap_or_else(|e| eprintln!("Failed to persist state: {}", e));
             }
