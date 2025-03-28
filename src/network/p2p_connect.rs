@@ -80,7 +80,7 @@ impl NetworkManager {
     pub fn connect_to_peer(peer_manager: Arc<Self>, addr: &str) {
         match TcpStream::connect(addr) {
             Ok(stream) => {
-                println!("Connected to peer: {}", addr);
+                // println!("Connected to peer: {}", addr);
                 peer_manager.add_peer(addr.to_string(), stream.try_clone().unwrap());
 
                 let peers_clone = Arc::clone(&peer_manager.peers);

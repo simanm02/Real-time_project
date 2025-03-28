@@ -71,7 +71,16 @@ fn main() -> std::io::Result<()> {
 
 
     let fault_monitor = fault_handler::ElevatorHealthMonitor::new();
-    fault_handler::start_health_monitoring(Arc::clone(&fault_monitor), Arc::clone(&elevator_system.hall_calls));
+    fault_handler::start_health_monitoring(
+        Arc::clone(&fault_monitor),
+         Arc::clone(&elevator_system.hall_calls),
+        Arc::clone(&elevator_system));
+
+    {
+        let mut monitor = fault_monitor.lock().unwrap();
+        monitor.record_heartbeat(&elev_id);
+        println!("Registered self (elevator {}) as active", elev_id);
+    }
     
     start_reconnection_service(Arc::clone(&elevator_system));
 
@@ -82,28 +91,41 @@ fn main() -> std::io::Result<()> {
     // Try to connect to other potential elevators
     for i in 0..3 {
         if i != (elev_port - 15657) as usize {
+            // IP adresses for physical machines:
+            /*
             let peer_message_port = 8878 ;
-            //ip adresses are hardcoded for now
+            // ip adresses are hardcoded for now
+            let peer_addr = format!("10.24.139.104:{}", peer_message_port);
+            let peer_addr_2 = format!("10.100.23.35:{}", peer_message_port);
+            println!("Testing connection to potential peer at {}", peer_addr);
+             */
+
+            // Localhost for simulators:
+            let peer_message_port = 8878 + i;
             let peer_addr = format!("localhost:{}", peer_message_port);
 
-            let peer_addr_2 = format!("localhost:{}", peer_message_port);
             let elevator_system_clone = Arc::clone(&elevator_system);
+
+            let connection_result = elevator_system.establish_bidirectional_connection(&peer_addr);
+            println!("Connection test to {} result: {}", peer_addr, connection_result);
     
             thread::spawn(move || {
                 // Retry connecting a few times
                 for _ in 0..5 {
-                    // 1) Attempt connection using p2p_connect’s function
+                    // 1) Attempt connection using connect function in p2p_connect
                     p2p_connect::connect(
                         Arc::clone(&elevator_system_clone.network_manager), 
                         &peer_addr
                     );
-                    p2p_connect::connect(
+                    // Uncomment if using physical machines with IP address
+                    /*p2p_connect::connect(
                         Arc::clone(&elevator_system_clone.network_manager), 
                         &peer_addr_2
-                    );
+                    );*/
                     // 2) Add the peer to our local ElevatorSystem list (so we know about it)
                     elevator_system_clone.add_peer(peer_addr.clone());
-                    elevator_system_clone.add_peer(peer_addr_2.clone());
+                    // Uncomment if using physical machines with IP address
+                    // elevator_system_clone.add_peer(peer_addr_2.clone());
     
                     // 3) Send our initial state to the peer
                     match std::net::TcpStream::connect(&peer_addr) {

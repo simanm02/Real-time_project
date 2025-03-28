@@ -6,6 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 use std::thread;
 
+use crate::elevio::system::ElevatorSystem;
+
 // Constants for heartbeat timing
 const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
 // const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -87,6 +89,7 @@ impl ElevatorHealthMonitor {
 pub fn start_health_monitoring(
     health_monitor: Arc<Mutex<ElevatorHealthMonitor>>,
     hall_calls: Arc<Mutex<HashMap<(u8, u8), (String, u64)>>>,
+    elevator_system: Arc<ElevatorSystem>
 ) {
     thread::spawn(move || {
         loop {
@@ -101,7 +104,7 @@ pub fn start_health_monitoring(
             
             // If we found disconnected elevators, reassign their hall calls
             if !disconnected.is_empty() {
-                reassign_hall_calls(&disconnected, hall_calls.clone());
+                reassign_hall_calls(&disconnected, hall_calls.clone(), Some(elevator_system.clone()));
             }
         }
     });
@@ -111,6 +114,7 @@ pub fn start_health_monitoring(
 fn reassign_hall_calls(
     disconnected_elevators: &[String],
     hall_calls: Arc<Mutex<HashMap<(u8, u8), (String, u64)>>>,
+    elevator_system: Option<Arc<ElevatorSystem>>
 ) {
     let mut calls_to_reassign = Vec::new();
     
@@ -128,17 +132,18 @@ fn reassign_hall_calls(
     for (floor, direction, timestamp) in calls_to_reassign {
         println!("Reassigning hall call: floor {}, direction {}", floor, direction);
         
-        // Mark the call as unassigned so it will be picked up by active elevators
-        let mut hall_calls_guard = hall_calls.lock().unwrap();
-        hall_calls_guard.insert((floor, direction), (String::new(), timestamp));
-    }
-}
-
-// Utility function to get current timestamp in seconds
-pub fn current_timestamp() -> u64 {
-    match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
-        Ok(n) => n.as_secs(),
-        Err(_) => 0,
+        // Mark the call as unassigned
+        {
+            let mut hall_calls_guard = hall_calls.lock().unwrap();
+            hall_calls_guard.insert((floor, direction), (String::new(), timestamp));
+        }
+        
+        // If we have the elevator system, actively reassign the call
+        if let Some(system) = &elevator_system {
+            println!("Actively triggering reassignment for call: floor {}, direction {}", 
+                     floor, direction);
+            system.assign_hall_call(floor, direction, timestamp);
+        }
     }
 }
 

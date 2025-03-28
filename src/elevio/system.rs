@@ -54,7 +54,8 @@ pub fn start_reconnection_service(elevator_system: Arc<ElevatorSystem>) {
                 if i as usize != elevator_id - 1 {
                     let peer_message_port = 8878 + i;
                     let peer_addr = format!("localhost:{}", peer_message_port);
-                    let peer_addr_2 = format!("localhost:{}", peer_message_port);
+                    // let peer_addr = format!("10.24.139.104:{}", peer_message_port);
+                    // let peer_addr_2 = format!("10.100.23.35:{}", peer_message_port);
                         
                     // Try to establish bidirectional connection
                     elevator_system.establish_bidirectional_connection(&peer_addr);
@@ -123,6 +124,9 @@ pub fn message_listener(elevator_system: Arc<ElevatorSystem>, port: u16, fault_m
                 Err(_) => {
                     // Timeout - check for disconnected elevators
                     elevator_system_clone.check_disconnected_elevators();
+
+                    // Check for any unassigned hall calls and assign them
+                    elevator_system_clone.check_unassigned_hall_calls();
                     
                     // Broadcast our state periodically
                     elevator_system_clone.broadcast_state();
@@ -178,7 +182,7 @@ impl ElevatorSystem {
                 };
                 
                 if stream.write_all(msg.to_string().as_bytes()).is_ok() {
-                    println!("Successfully established connection with {}", peer_addr);
+                    // println!("Successfully established connection with {}", peer_addr);
                     return true;
                 }
             },
@@ -233,30 +237,52 @@ impl ElevatorSystem {
     }
 
     pub fn handle_hall_call_message(&self, floor: u8, direction: u8, timestamp: u64) {
-        // Add to hall calls if newer than what we have
-        let mut update_needed = false;
+        println!("DEBUG: Received hall call message for floor {}, direction {}", 
+                 floor, direction_to_string(direction));
+        
+        // ALWAYS turn on the hall call light first (unconditionally)
         {
+            let elevator = self.local_elevator.lock().unwrap();
+            elevator.call_button_light(floor, direction, true);
+            println!("DEBUG: Turned ON hall call light for floor {}, direction {}", 
+                    floor, direction_to_string(direction));
+        }
+        
+        // Then update our internal hall calls map
+        let update_needed = {
             let mut hall_calls = self.hall_calls.lock().unwrap();
             
-            if let Some((_, existing_timestamp)) = hall_calls.get(&(floor, direction)) {
-                if timestamp > *existing_timestamp {
+            if let Some((assigned_to, existing_timestamp)) = hall_calls.get(&(floor, direction)) {
+                if timestamp > *existing_timestamp || assigned_to.is_empty() {
                     hall_calls.insert((floor, direction), (String::new(), timestamp));
-                    update_needed = true;
+                    true
+                } else {
+                    false
                 }
             } else {
                 hall_calls.insert((floor, direction), (String::new(), timestamp));
-                update_needed = true;
+                true
             }
-        }
+        };
         
         if update_needed {
-            // Turn on the hall call light
-            {
-                let elevator = self.local_elevator.lock().unwrap();
-                elevator.call_button_light(floor, direction, true);
-            }
-            
             // Determine the best elevator for this call
+            self.assign_hall_call(floor, direction, timestamp);
+        }
+    }
+
+    pub fn check_unassigned_hall_calls(&self) {
+        let unassigned_calls = {
+            let hall_calls = self.hall_calls.lock().unwrap();
+            hall_calls.iter()
+                .filter(|(_, (assigned_to, _))| assigned_to.is_empty())
+                .map(|((floor, direction), (_, timestamp))| (*floor, *direction, *timestamp))
+                .collect::<Vec<_>>()
+        };
+        
+        for (floor, direction, timestamp) in unassigned_calls {
+            println!("Found unassigned hall call: floor {}, direction {}", 
+                     floor, direction_to_string(direction));
             self.assign_hall_call(floor, direction, timestamp);
         }
     }
@@ -276,6 +302,13 @@ impl ElevatorSystem {
             direction,
             timestamp,
         };
+
+        {
+            let elevator = self.local_elevator.lock().unwrap();
+            elevator.call_button_light(floor, direction, true);
+            println!("Locally turned ON hall call light for floor {}, direction {}", 
+                    floor, direction_to_string(direction));
+        }
         
         // Store the hall call locally
         {
