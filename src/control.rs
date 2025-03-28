@@ -6,6 +6,7 @@ use crate::elevio::elev::Elevator;
 use crate::elevio::fault_handler;
 use crate::elevio::system::ElevatorSystem;
 
+
 pub fn direction_to_string(direction: u8) -> &'static str {
     match direction {
         e::DIRN_UP => "UP",
