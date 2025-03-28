@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{SystemTime, Duration};
 use std::env;
@@ -20,6 +20,8 @@ use driver_rust::control::{
     start_elevator,
     direction_to_string
 };
+
+
 
 
 fn main() -> std::io::Result<()> {
@@ -87,21 +89,23 @@ fn main() -> std::io::Result<()> {
     for i in 0..3 {
         if i != (elev_port - 15657) as usize {
 
-            // Uncomment if using physical machines with IP address:
-            // // ----- Physical machine begin here: -----
-            /*
+
+            // ----- Physical machine setup begin here: -----
             let peer_message_port = 8878 ;
-            // ip adresses are hardcoded for now
             let peer_addr = format!("10.24.139.104:{}", peer_message_port);
             let peer_addr_2 = format!("10.100.23.35:{}", peer_message_port);
             println!("Testing connection to potential peer at {}", peer_addr);
-             */
-            // // ----- Physical machine end here -----
+            // ----- Physical machine setup end here -----
 
 
-            // ----- Localhost for simulators begin here -----:
+
+            /*
+            // ----- Simulator setup begin here: -----
             let peer_message_port = 8878 + i;
             let peer_addr = format!("localhost:{}", peer_message_port);
+            // ----- Simulator setup end here -----
+            */
+
 
             let elevator_system_clone = Arc::clone(&elevator_system);
 
@@ -111,31 +115,32 @@ fn main() -> std::io::Result<()> {
             thread::spawn(move || {
                 // Retry connecting a few times
                 for _ in 0..5 {
+                    // (Un)Comment out if using physical machines with IP address and not simulator setup:
                     // 1) Attempt connection using connect function in p2p_connect
                     p2p_connect::connect(
                         Arc::clone(&elevator_system_clone.network_manager), 
                         &peer_addr
                     );
-
-                    // Uncomment if using physical machines with IP address
-                    /* 
-                    // ----- Physical machine begin here: -----
-                    p2p_connect::connect(
-                        Arc::clone(&elevator_system_clone.network_manager), 
-                        &peer_addr_2
-                    );
-                    // ----- Physical machine end here -----
+                    /*
+                    // ----- Simulator setup begin here: -----
+                    // 2) Add the peer to our local ElevatorSystem list (so we know about it)
+                    elevator_system_clone.add_peer(peer_addr.clone());
+                    // ----- Simulator setup end here -----
                      */
 
-                    // 2) Add the peer to our local ElevatorSystem list
-                    elevator_system_clone.add_peer(peer_addr.clone());
 
-                    // Uncomment if using physical machines with IP address:
+                    // (Un)Comment and type correct IP if using physical setup:
                     // ----- Physical machine begin here: -----
-                    // elevator_system_clone.add_peer(peer_addr.clone());
-                    // elevator_system_clone.add_peer(peer_addr_2.clone());
+                    let peer_message_port = 8878 ;
+                    // ip adresses are hardcoded for now
+                    let peer_addr = format!("10.24.139.104:{}", peer_message_port);
+                    let peer_addr_2 = format!("10.100.23.35:{}", peer_message_port);
+                    println!("Testing connection to potential peer at {}", peer_addr);
+                    elevator_system_clone.add_peer(peer_addr.clone());
+                    elevator_system_clone.add_peer(peer_addr_2.clone());
                     // ----- Physical machine end here -----
-    
+
+
                     // 3) Send our initial state to the peer
                     match std::net::TcpStream::connect(&peer_addr) {
                         Ok(mut stream) => {
@@ -167,74 +172,78 @@ fn main() -> std::io::Result<()> {
     // Set up polling
     let poll_period = Duration::from_millis(25);
     
-    // Crossbeams for various polling functions
     let (call_button_tx, call_button_rx) = cbc::unbounded::<elevio::poll::CallButton>();
     {
-        // Clone the elevator handle so that there can be a new thread dedicated to it.
-        let elevator = elevator.clone();
-
-        // Spawns a new dedicated thread that continuously polls
-        spawn(move || elevio::poll::call_buttons(elevator, call_button_tx, poll_period));
+        let elevator_clone = elevator.clone();
+        thread::spawn(move || elevio::poll::call_buttons(elevator_clone, call_button_tx, poll_period));
     }
     
     let (floor_sensor_tx, floor_sensor_rx) = cbc::unbounded::<u8>();
     {
-        let elevator_new = elevator.clone();
-        spawn(move || elevio::poll::floor_sensor(elevator_new, floor_sensor_tx, poll_period));
+        let elevator_clone = elevator.clone();
+        thread::spawn(move || elevio::poll::floor_sensor(elevator_clone, floor_sensor_tx, poll_period));
     }
     
     let (stop_button_tx, stop_button_rx) = cbc::unbounded::<bool>();
     {
-        let elevator = elevator.clone();
-        spawn(move || elevio::poll::stop_button(elevator, stop_button_tx, poll_period));
+        let elevator_clone = elevator.clone();
+        thread::spawn(move || elevio::poll::stop_button(elevator_clone, stop_button_tx, poll_period));
     }
     
     let (obstruction_tx, obstruction_rx) = cbc::unbounded::<bool>();
     {
-        let elevator = elevator.clone();
-        spawn(move || elevio::poll::obstruction(elevator, obstruction_tx, poll_period));
+        let elevator_clone = elevator.clone();
+        thread::spawn(move || elevio::poll::obstruction(elevator_clone, obstruction_tx, poll_period));
     }
-
-    let dirn = e::DIRN_STOP;
-
-    // If the elevator isn't on a specific floor when we start, move down until it reaches one.
-    if elevator.floor_sensor().is_none() {
-        elevator.motor_direction(e::DIRN_DOWN);
-    }
-
-    // Turn off all call button lights at startup
-    for call_type in 0..3 {
-        for floor in 0..3 {
-            elevator.call_button_light(floor, call_type, false);
+    
+    // Initialize elevator position
+    {
+        let elevator = elevator_system.local_elevator.lock().unwrap();
+        
+        // If the elevator isn't on a specific floor, move down until it reaches one
+        if elevator.floor_sensor().is_none() {
+            elevator.motor_direction(e::DIRN_DOWN);
+        }
+        
+        // Turn off all call button lights at startup
+        for call_type in 0..3 {
+            for floor in 0..elev_num_floors {
+                elevator.call_button_light(floor, call_type, false);
+            }
         }
     }
-
+    
     // Move elevator to ground floor at startup
     let mut starting_floor = floor_sensor_rx.recv().unwrap();
-    while starting_floor != 0 {
-        elevator.motor_direction(e::DIRN_DOWN);
-        starting_floor = floor_sensor_rx.recv().unwrap();
-        elevator.floor_indicator(starting_floor);
+    {
+        let mut elevator = elevator_system.local_elevator.lock().unwrap();
+        while starting_floor != 0 {
+            elevator.motor_direction(e::DIRN_DOWN);
+            starting_floor = floor_sensor_rx.recv().unwrap();
+            elevator.floor_indicator(starting_floor);
+        }
+        elevator.motor_direction(e::DIRN_STOP);
+        elevator.current_floor = 0;
+        elevator.floor_indicator(0);
     }
-    elevator.motor_direction(e::DIRN_STOP);
-
-    elevator.floor_indicator(0);
-
-    // Main loop that uses 'select!' to wait for messages from any of the channels:
+    
+    // Main elevator control loop
     loop {
         cbc::select! {
-            // If we receive that a call button is pressed from the thread:
+            // Handle call button presses
             recv(call_button_rx) -> button_type => {
                 let call_button = button_type.unwrap();
-                println!("{:#?}", call_button);
+                println!("Call button pressed: {:#?}", call_button);
 
-                // Turn on the corresponding call button light
-                elevator.call_button_light(call_button.floor, call_button.call, true);
+                if call_button.call == e::CAB {
+                    // Handle cab call locally
+                    let mut elevator = elevator_system.local_elevator.lock().unwrap();
+                    elevator.call_button_light(call_button.floor, call_button.call, true);
 
                     // Add to local queue
                     let callbutton = vec![call_button.floor, call_button.call];
                     if !elevator.call_buttons.iter().any(|x| x == &callbutton) {
-                        elevator.call_buttons.push(callbutton.clone()); // Clone here
+                        elevator.call_buttons.push(callbutton.clone());
 
                         println!("Persisting state after adding cab call: floor {}, call {}", call_button.floor, call_button.call);
                         fault_handler::persist_elevator_state(
@@ -246,7 +255,7 @@ fn main() -> std::io::Result<()> {
 
                     }
 
-                    // Start elevator
+                    // Start elevator if needed
                     start_elevator(&mut elevator, callbutton[0], 0); // Use callbutton[0]
 
                 } else {
@@ -258,21 +267,32 @@ fn main() -> std::io::Result<()> {
             // Handle floor sensor
             recv(floor_sensor_rx) -> floor_sensor_data => {
                 let floor = floor_sensor_data.unwrap();
-                elevator.current_floor = floor;
-                println!("Floor: {:#?}", floor);
-                elevator.floor_indicator(floor);// Update the floor indicator when a new floor is reached
-                serve_call(&mut elevator, floor);
+                
+                // Update current floor
+                {
+                    let mut elevator = elevator_system.local_elevator.lock().unwrap();
+                    elevator.current_floor = floor;
+                    elevator.floor_indicator(floor);
+                    println!("Floor: {:#?}", floor);
+                }
+                
+                // Check if we need to serve any calls at this floor
+                serve_call(&elevator_system, floor);
+                
+                // Broadcast updated state
+                elevator_system.broadcast_state();
             },
-
-            // If we receive that a stop button is pressed from the thread:
+            
+            // Handle stop button
             recv(stop_button_rx) -> stop_btn => {
                 let stop = stop_btn.unwrap();
                 println!("Stop button: {:?}", stop);
+
                 if stop {
                     let local_id = elevator_system.local_id.clone();
                     let mut calls_to_reassign = Vec::new();
 
-                    {
+                    { // Scope for elevator lock
                         let mut elevator = elevator_system.local_elevator.lock().unwrap();
 
                         // Immediately stop the elevator
@@ -286,7 +306,7 @@ fn main() -> std::io::Result<()> {
                             }
                         }
 
-                        // Clear local pending call requests
+                        // Clear local pending call requests (cab calls and assigned hall calls)
                         elevator.call_buttons.clear();
 
                         // Find hall calls assigned to this elevator
@@ -301,14 +321,16 @@ fn main() -> std::io::Result<()> {
                             }
                         }
 
+
                         // Open the door if at a floor
                         if elevator.floor_sensor().is_some() {
                             elevator.door_light(true);
+                            // Note: Blocking sleep, consider async/timer if this becomes an issue
                             std::thread::sleep(Duration::from_secs(3));
                             elevator.door_light(false);
                         }
 
-                        // Persist the cleared state
+                        // Persist the cleared state (optional but good practice)
                         fault_handler::persist_elevator_state(
                             &local_id,
                             elevator.current_floor,
@@ -325,6 +347,8 @@ fn main() -> std::io::Result<()> {
                          elevator_system.assign_hall_call(floor, direction, timestamp);
                     }
 
+
+                    // Broadcast updated (stopped) state
                     elevator_system.broadcast_state();
                 }
             },
@@ -357,7 +381,7 @@ fn main() -> std::io::Result<()> {
                         elevator.door_light(true);
                         
                         // Reassign calls without waiting 10 seconds
-                        drop(elevator);
+                        drop(elevator); 
                         
                         // Find and reassign this elevator's calls
                         let calls_to_reassign = {
@@ -376,11 +400,13 @@ fn main() -> std::io::Result<()> {
                         
                         // Reassign each call
                         for (floor, direction, timestamp) in calls_to_reassign {
+                            // Mark the call as unassigned
                             {
                                 let mut hall_calls = elevator_system.hall_calls.lock().unwrap();
                                 hall_calls.insert((floor, direction), (String::new(), timestamp));
                             }
                             
+                            // Reassign the call
                             elevator_system.assign_hall_call(floor, direction, timestamp);
                         }
                         
@@ -392,11 +418,17 @@ fn main() -> std::io::Result<()> {
                         
                         // Reset obstruction timer
                         elevator.obstruction_start_time = None;
+                        
                     }
                 } else {
-                    obstr = false;
-                    println!("Obstruction: {:#?}", obstr);
+                    // Not at a floor, simply update state
+                    elevator.is_obstructed = obstr;
+                    println!("Obstruction state updated: {}", obstr);
                 }
+                
+                // Broadcast updated state to peers
+                drop(elevator);
+                elevator_system.broadcast_state();
             },
         }
     }
