@@ -7,8 +7,8 @@ use super::elev;
 #[derive(Debug)]
 // Struct to create a call button event: six callbuttons and four floorbuttons
 pub struct CallButton {
-    pub floor: u8, // u8 = 8-bit unsigned integer 
-    pub call: u8, // u8 = 8-bit unsigned integer
+    pub floor: u8,
+    pub call: u8,
 }
 
 // A function that polls for call button presses.

@@ -3,8 +3,7 @@
 use std::fmt; // For implementing Display/Debug traits
 use std::io::*; // For read/write traits, etc.
 use std::net::TcpStream; // For the TCP connection to the elevator server
-use std::sync::*;
-// For Arc and Mutex
+use std::sync::*; // For the mutex lock
 
 #[derive(Clone, Debug)]
 // Elevator struct defines a mutex lock for the TCP stream and defines total floor count
