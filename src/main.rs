@@ -35,6 +35,8 @@ fn main() -> std::io::Result<()> {
     } else { 
         15657 
     };
+
+    
     
     let elev_num_floors = 4;
     
