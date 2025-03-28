@@ -119,13 +119,13 @@ pub fn serve_call(elevator_system: &ElevatorSystem, floor: u8) {
         None
     };
 
-    // If no valid serving call was found, just return
+    // If no valid serving call was found, return without further action.
     let serving_call = match serving_call_opt {
         Some(call) => call,
         None => return,
     };
 
-    // Also check and remove any extra cab call.
+    // For cab calls, also check and remove any extra cab call.
     if let Some(cab_call_pos) = elevator.call_buttons.iter().position(|call| call[0] == floor && call[1] == e::CAB) {
         elevator.call_button_light(floor, e::CAB, false);
         elevator.call_buttons.remove(cab_call_pos);
@@ -161,13 +161,13 @@ pub fn serve_call(elevator_system: &ElevatorSystem, floor: u8) {
 
     println!("Call for floor {} removed", floor);
 
-    // Open door
+    // Open door and handle obstruction properly
     elevator.door_light(true);
 
     // Check for obstruction before starting the wait
     if elevator.is_obstructed {
         println!("Door kept open due to active obstruction");
-        // Release the elevator lock and return into the main loop to handle the obstruction
+        // Release the elevator lock and return it to main loop
         return;
     }
 
@@ -190,7 +190,7 @@ pub fn serve_call(elevator_system: &ElevatorSystem, floor: u8) {
         
         if is_blocked {
             println!("Door operation interrupted by obstruction");
-            return; // Let main loop handle obstruction
+            return; // Goes to main loop
         }
     }
 
@@ -225,7 +225,7 @@ pub fn serve_call(elevator_system: &ElevatorSystem, floor: u8) {
                 fault_handler::persist_elevator_state(
                     &elevator_system.local_id,
                     elevator.current_floor,
-                    elevator.current_direction, 
+                    elevator.current_direction,
                     &elevator.call_buttons
                 ).unwrap_or_else(|e| eprintln!("Failed to persist state: {}", e));
             }

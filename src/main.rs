@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 use std::time::{SystemTime, Duration};
 use std::env;
@@ -121,6 +121,8 @@ fn main() -> std::io::Result<()> {
                         Arc::clone(&elevator_system_clone.network_manager), 
                         &peer_addr
                     );
+
+                    
                     /*
                     // ----- Simulator setup begin here: -----
                     // 2) Add the peer to our local ElevatorSystem list (so we know about it)
@@ -131,11 +133,6 @@ fn main() -> std::io::Result<()> {
 
                     // (Un)Comment and type correct IP if using physical setup:
                     // ----- Physical machine begin here: -----
-                    let peer_message_port = 8878 ;
-                    // ip adresses are hardcoded for now
-                    let peer_addr = format!("10.24.139.104:{}", peer_message_port);
-                    let peer_addr_2 = format!("10.100.23.35:{}", peer_message_port);
-                    println!("Testing connection to potential peer at {}", peer_addr);
                     elevator_system_clone.add_peer(peer_addr.clone());
                     elevator_system_clone.add_peer(peer_addr_2.clone());
                     // ----- Physical machine end here -----

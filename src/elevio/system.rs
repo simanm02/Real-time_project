@@ -53,13 +53,22 @@ pub fn start_reconnection_service(elevator_system: Arc<ElevatorSystem>) {
                 let elevator_id = elevator_system.local_id.parse::<usize>().unwrap_or(0);
                 if i as usize != elevator_id - 1 {
                     let peer_message_port = 8878 + i;
+
+                    /*
+                    // ----- Simulator setup begin here: -----
                     let peer_addr = format!("localhost:{}", peer_message_port);
-                    // let peer_addr = format!("10.24.139.104:{}", peer_message_port);
-                    // let peer_addr_2 = format!("10.100.23.35:{}", peer_message_port);
-                        
-                    // Try to establish bidirectional connection
                     elevator_system.establish_bidirectional_connection(&peer_addr);
-                    // elevator_system.establish_bidirectional_connection(&peer_addr_2);
+                    // ------ Simulator setup end here: -----
+                    */
+
+                    
+                    // ----- Physical machine setup begin here: -----
+                    let peer_addr = format!("10.24.139.104:{}", peer_message_port);
+                    let peer_addr_2 = format!("10.100.23.35:{}", peer_message_port);
+
+                    elevator_system.establish_bidirectional_connection(&peer_addr);
+                    elevator_system.establish_bidirectional_connection(&peer_addr_2);
+                    // ------ Physical machine setup end here: -----
                 }
             }
         }
