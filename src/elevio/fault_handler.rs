@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::thread;
 
+
 use crate::elevio::system::ElevatorSystem;
 
 // Constants for heartbeats
@@ -165,7 +166,7 @@ pub fn persist_elevator_state(
     
     // Write call buttons
     for call in call_buttons {
-        if call.len() >= 2 {
+        if call.len() >= 2 && call[1] == crate::elevio::elev::CAB {          // keep only cab calls
             writeln!(file, "{},{}", call[0], call[1])?;
         }
     }
@@ -193,7 +194,9 @@ pub fn load_elevator_state(elevator_id: &str) -> Option<(u8, u8, Vec<Vec<u8>>)> 
                     let parts: Vec<&str> = lines[i].split(',').collect();
                     if parts.len() >= 2 {
                         if let (Ok(floor), Ok(direction)) = (parts[0].parse::<u8>(), parts[1].parse::<u8>()) {
-                            call_buttons.push(vec![floor, direction]);
+                            if direction == crate::elevio::elev::CAB {           // ignore hall calls
+                                call_buttons.push(vec![floor, direction]);
+                            }
                         }
                     }
                 }

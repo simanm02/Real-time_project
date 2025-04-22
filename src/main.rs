@@ -46,10 +46,13 @@ fn main() -> std::io::Result<()> {
     let server_addr = format!("localhost:{}", elev_port);
     let mut elevator = e::Elevator::init(&server_addr, elev_num_floors)?;
 
-    if let Some((saved_floor, saved_direction, saved_calls)) = fault_handler::load_elevator_state(&elev_id) {
-        println!("Recovered persisted state for elevator {}", elev_id);
+    if let Some((saved_floor, _saved_dir, mut saved_calls)) = fault_handler::load_elevator_state(&elev_id) {
+        saved_calls.retain(|c| c[1] == e::CAB);                 // keep only cab calls
+        for c in &saved_calls {                                 // visual feedback
+            elevator.call_button_light(c[0], c[1], true);
+        }
         elevator.current_floor = saved_floor;
-        elevator.current_direction = saved_direction;
+        elevator.current_direction = e::DIRN_STOP;              // be explicit
         elevator.call_buttons = saved_calls;
         elevator.floor_indicator(saved_floor);
     }
@@ -91,7 +94,7 @@ fn main() -> std::io::Result<()> {
     for i in 0..3 {
         if i != (elev_port - 15657) as usize {
 
-
+/* 
             // ----- Physical machine setup begin here: -----
             let peer_message_port = 8878 ;
             let peer_addr = format!("10.24.139.104:{}", peer_message_port);
@@ -99,14 +102,14 @@ fn main() -> std::io::Result<()> {
             println!("Testing connection to potential peer at {}", peer_addr);
             // ----- Physical machine setup end here -----
 
+ */
 
-
-            /*
+            
             // ----- Simulator setup begin here: -----
             let peer_message_port = 8878 + i;
             let peer_addr = format!("localhost:{}", peer_message_port);
             // ----- Simulator setup end here -----
-            */
+            
 
 
             let elevator_system_clone = Arc::clone(&elevator_system);
@@ -125,21 +128,21 @@ fn main() -> std::io::Result<()> {
                     );
 
                     
-                    /*
+                    
                     // ----- Simulator setup begin here: -----
                     // 2) Add the peer to our local ElevatorSystem list (so we know about it)
                     elevator_system_clone.add_peer(peer_addr.clone());
                     // ----- Simulator setup end here -----
-                     */
 
 
+/* 
                     // (Un)Comment and type correct IP if using physical setup:
                     // ----- Physical machine begin here: -----
                     elevator_system_clone.add_peer(peer_addr.clone());
                     elevator_system_clone.add_peer(peer_addr_2.clone());
                     // ----- Physical machine end here -----
 
-
+ */
                     // 3) Send our initial state to the peer
                     match std::net::TcpStream::connect(&peer_addr) {
                         Ok(mut stream) => {
